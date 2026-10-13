@@ -72,6 +72,8 @@ export default function CalendarScreen() {
   const [status, setStatus] = useState<SlotStatus | "ALL">("ALL");
   const [federation, setFederation] = useState("");
   const [creationFederation, setCreationFederation] = useState("");
+  const [creationDepartmentId, setCreationDepartmentId] = useState<number | null>(null);
+  const [creationInterventionTypeId, setCreationInterventionTypeId] = useState<number | null>(null);
   const [manual, setManual] = useState("");
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
@@ -79,6 +81,11 @@ export default function CalendarScreen() {
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
   const utils = trpc.useUtils();
   const settings = trpc.admin.settings.useQuery();
+  const departments = trpc.admin.departments.useQuery();
+  const interventionTypes = trpc.admin.interventionTypes.useQuery(
+    creationDepartmentId ? { departmentId: creationDepartmentId } : undefined,
+    { enabled: creationDepartmentId !== null },
+  );
   const configuredFederations = settings.data?.federations as string[] | undefined;
   const federations = configuredFederations?.length ? configuredFederations : [...FEDERATIONS];
   const calendar = trpc.admin.calendar.useQuery({ month, status: status === "ALL" ? undefined : status, federation: federation || undefined });
@@ -96,8 +103,13 @@ export default function CalendarScreen() {
   const days = useMemo(() => calendarDates(month, entries), [month, entries]);
   const selected = entries.find(({ slot }) => slot.id === selectedSlotId);
   const add = (dates: string[]) => {
-    if (dates.length && creationFederation) {
-      create.mutate({ dates, federation: creationFederation });
+    if (dates.length && creationDepartmentId && creationFederation) {
+      create.mutate({
+        dates,
+        departmentId: creationDepartmentId,
+        interventionTypeId: creationInterventionTypeId,
+        federation: creationFederation,
+      });
     }
   };
   const manualIso = frenchDateToIso(manual);
@@ -388,7 +400,48 @@ export default function CalendarScreen() {
       />
       {printableCalendar.isError ? <Text style={styles.error}>L’agenda des engagements confirmés ne peut pas être chargé pour le moment.</Text> : null}
     </SectionCard>
-    <SectionCard><Text style={styles.section}>Créer des disponibilités</Text><Text style={styles.fieldLabel}>Fédération de ces disponibilités</Text><View style={styles.filters}>{federations.map((value) => <Chip key={value} label={value} selected={creationFederation === value} onPress={() => setCreationFederation(value)} />)}</View><Text style={styles.help}>Choisissez d’abord la fédération. Les dates créées seront proposées uniquement aux églises de cette fédération.</Text><Field label="Ajouter une date (JJ/MM/AAAA)" value={manual} onChangeText={setManual} placeholder="03/10/2026" autoCapitalize="none"/><PrimaryButton label="AJOUTER LA DATE" icon="add-circle-outline" disabled={!creationFederation || !manualIso || create.isPending} onPress={() => manualIso && add([manualIso])}/><View style={styles.divider}/><Text style={styles.help}>Générer les samedis ou week-ends entre deux dates</Text><Field label="Du (JJ/MM/AAAA)" value={rangeStart} onChangeText={setRangeStart} placeholder="01/10/2026" autoCapitalize="none"/><Field label="Au (JJ/MM/AAAA)" value={rangeEnd} onChangeText={setRangeEnd} placeholder="31/12/2026" autoCapitalize="none"/><View style={styles.filters}><Chip label="Samedis" selected={rangeMode === "saturdays"} onPress={() => setRangeMode("saturdays")}/><Chip label="Samedis et dimanches" selected={rangeMode === "weekends"} onPress={() => setRangeMode("weekends")}/></View><PrimaryButton label="GÉNÉRER LES DATES" tone="secondary" icon="repeat-outline" disabled={!creationFederation || !rangeStartIso || !rangeEndIso || create.isPending} onPress={() => rangeStartIso && rangeEndIso && add(makeDates(rangeStartIso, rangeEndIso, rangeMode))}/>{create.data ? <Text style={styles.feedback}>{create.data.created} date(s) ajoutée(s), {create.data.skipped} existante(s).</Text> : null}{create.error ? <Text style={styles.error}>{create.error.message}</Text> : null}</SectionCard>
+    <SectionCard>
+      <Text style={styles.section}>Créer des disponibilités</Text>
+
+      <Text style={styles.fieldLabel}>Département</Text>
+      <View style={styles.filters}>
+        {(departments.data ?? []).map((department) => (
+          <Chip
+            key={department.id}
+            label={department.name}
+            selected={creationDepartmentId === department.id}
+            onPress={() => {
+              setCreationDepartmentId(department.id);
+              setCreationInterventionTypeId(null);
+            }}
+          />
+        ))}
+      </View>
+      {departments.isLoading ? <Text style={styles.help}>Chargement des départements…</Text> : null}
+      {departments.isError ? <Text style={styles.error}>Les départements ne peuvent pas être chargés.</Text> : null}
+
+      {creationDepartmentId ? (
+        <>
+          <Text style={styles.fieldLabel}>Type d’intervention</Text>
+          <View style={styles.filters}>
+            {(interventionTypes.data ?? []).map((type) => (
+              <Chip
+                key={type.id}
+                label={type.name}
+                selected={creationInterventionTypeId === type.id}
+                onPress={() => setCreationInterventionTypeId(type.id)}
+              />
+            ))}
+          </View>
+          {interventionTypes.isLoading ? <Text style={styles.help}>Chargement des types d’intervention…</Text> : null}
+          {!interventionTypes.isLoading && !interventionTypes.isError && !(interventionTypes.data ?? []).length
+            ? <Text style={styles.help}>Aucun type d’intervention n’est encore configuré pour ce département.</Text>
+            : null}
+          {interventionTypes.isError ? <Text style={styles.error}>Les types d’intervention ne peuvent pas être chargés.</Text> : null}
+        </>
+      ) : null}
+
+      <Text style={styles.fieldLabel}>Fédération de ces disponibilités</Text><View style={styles.filters}>{federations.map((value) => <Chip key={value} label={value} selected={creationFederation === value} onPress={() => setCreationFederation(value)} />)}</View><Text style={styles.help}>Choisissez d’abord la fédération. Les dates créées seront proposées uniquement aux églises de cette fédération.</Text><Field label="Ajouter une date (JJ/MM/AAAA)" value={manual} onChangeText={setManual} placeholder="03/10/2026" autoCapitalize="none"/><PrimaryButton label="AJOUTER LA DATE" icon="add-circle-outline" disabled={!creationDepartmentId || !creationFederation || !manualIso || create.isPending} onPress={() => manualIso && add([manualIso])}/><View style={styles.divider}/><Text style={styles.help}>Générer les samedis ou week-ends entre deux dates</Text><Field label="Du (JJ/MM/AAAA)" value={rangeStart} onChangeText={setRangeStart} placeholder="01/10/2026" autoCapitalize="none"/><Field label="Au (JJ/MM/AAAA)" value={rangeEnd} onChangeText={setRangeEnd} placeholder="31/12/2026" autoCapitalize="none"/><View style={styles.filters}><Chip label="Samedis" selected={rangeMode === "saturdays"} onPress={() => setRangeMode("saturdays")}/><Chip label="Samedis et dimanches" selected={rangeMode === "weekends"} onPress={() => setRangeMode("weekends")}/></View><PrimaryButton label="GÉNÉRER LES DATES" tone="secondary" icon="repeat-outline" disabled={!creationDepartmentId || !creationFederation || !rangeStartIso || !rangeEndIso || create.isPending} onPress={() => rangeStartIso && rangeEndIso && add(makeDates(rangeStartIso, rangeEndIso, rangeMode))}/>{create.data ? <Text style={styles.feedback}>{create.data.created} date(s) ajoutée(s), {create.data.skipped} existante(s).</Text> : null}{create.error ? <Text style={styles.error}>{create.error.message}</Text> : null}</SectionCard>
     <SectionCard><Text style={styles.section}>Vue mensuelle</Text><View style={styles.monthNav}><Pressable accessibilityRole="button" onPress={() => shiftMonth(-1)}><Text style={styles.nav}>‹ Mois précédent</Text></Pressable><Text style={styles.month}>{new Date(`${month}-01T12:00:00`).toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}</Text><Pressable accessibilityRole="button" onPress={() => shiftMonth(1)}><Text style={styles.nav}>Suivant ›</Text></Pressable></View><Text style={styles.fieldLabel}>Statut des dates</Text><View style={styles.filters}>{(["ALL", "AVAILABLE", "PENDING_CONFIRMATION", "CONFIRMED", "UNAVAILABLE"] as const).map((value) => <Chip key={value} label={value === "ALL" ? "Toutes" : STATUS_META[value].label} selected={status === value} onPress={() => { setStatus(value); setSelectedSlotId(null); }}/>)}</View><Text style={styles.fieldLabel}>Fédération</Text><View style={styles.filters}>{["", ...federations].map((value) => <Chip key={value || "ALL"} label={value || "Toutes"} selected={federation === value} onPress={() => { setFederation(value); setSelectedSlotId(null); }}/>)}</View>
       {calendar.isLoading ? <LoadingBlock label="Chargement de l’agenda…"/> : <><View style={styles.grid}>{weekdays.map((day, index) => <View key={`${day}-${index}`} style={styles.weekday}><Text style={styles.weekdayText}>{day}</Text></View>)}{days.map((item, index) => item ? <Pressable key={item.date} accessibilityRole="button" accessibilityLabel={`${item.day} ${item.entry ? STATUS_META[item.entry.slot.status as SlotStatus].label : "sans disponibilité"}`} onPress={() => { if (item.entry) setSelectedSlotId(item.entry.slot.id); else setManual(item.date); }} style={[styles.dayCell, item.entry && { backgroundColor: STATUS_META[item.entry.slot.status as SlotStatus].background, borderColor: STATUS_META[item.entry.slot.status as SlotStatus].color }, selectedSlotId === item.entry?.slot.id && styles.selectedDay]}><Text style={[styles.dayNumber, item.entry && { color: STATUS_META[item.entry.slot.status as SlotStatus].color }]}>{item.day}</Text>{item.entry?.slot.federation ? <Text style={styles.dayFederation}>{item.entry.slot.federation}</Text> : null}{item.entry ? <View style={[styles.dot, { backgroundColor: STATUS_META[item.entry.slot.status as SlotStatus].color }]} /> : null}</Pressable> : <View key={`pad-${index}`} style={styles.dayCellEmpty}/> )}</View><View style={styles.legend}>{(["AVAILABLE", "PENDING_CONFIRMATION", "CONFIRMED", "UNAVAILABLE"] as const).map((value) => <View key={value} style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: STATUS_META[value].color }]} /><Text style={styles.legendText}>{STATUS_META[value].label}</Text></View>)}</View></>}
     </SectionCard>

@@ -22,12 +22,51 @@ export const users = mysqlTable("users", {
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
 });
 
+export const departments = mysqlTable(
+  "departments",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    code: varchar("code", { length: 80 }).notNull().unique(),
+    name: varchar("name", { length: 180 }).notNull(),
+    active: mysqlEnum("active", ["YES", "NO"]).default("YES").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => [
+    index("departments_active_idx").on(table.active),
+  ],
+);
+
+export const interventionTypes = mysqlTable(
+  "intervention_types",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    departmentId: int("departmentId").notNull(),
+    name: varchar("name", { length: 180 }).notNull(),
+    active: mysqlEnum("active", ["YES", "NO"]).default("YES").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("intervention_types_department_name_unique").on(
+      table.departmentId,
+      table.name,
+    ),
+    index("intervention_types_department_active_idx").on(
+      table.departmentId,
+      table.active,
+    ),
+  ],
+);
+
 export const dateSlots = mysqlTable(
   "date_slots",
   {
     id: int("id").autoincrement().primaryKey(),
+    departmentId: int("departmentId").notNull(),
+    interventionTypeId: int("interventionTypeId"),
     date: date("date", { mode: "string" }).notNull(),
-    federation: varchar("federation", { length: 80 }),
+    federation: varchar("federation", { length: 80 }).notNull(),
     status: mysqlEnum("status", [
       "AVAILABLE",
       "PENDING_CONFIRMATION",
@@ -41,9 +80,24 @@ export const dateSlots = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => [
-    uniqueIndex("date_slots_date_unique").on(table.date),
+    uniqueIndex("date_slots_department_federation_date_type_unique").on(
+      table.departmentId,
+      table.federation,
+      table.date,
+      table.interventionTypeId,
+    ),
     index("date_slots_status_date_idx").on(table.status, table.date),
-    index("date_slots_federation_status_date_idx").on(table.federation, table.status, table.date),
+    index("date_slots_department_status_date_idx").on(
+      table.departmentId,
+      table.status,
+      table.date,
+    ),
+    index("date_slots_department_federation_status_date_idx").on(
+      table.departmentId,
+      table.federation,
+      table.status,
+      table.date,
+    ),
   ],
 );
 

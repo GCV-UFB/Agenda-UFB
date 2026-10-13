@@ -15,6 +15,8 @@ import {
   listAdmins,
   listAudit,
   listCalendar,
+  listDepartments,
+  listInterventionTypes,
   listPublicBootstrap,
   listRequests,
   removeEmptySlot,
@@ -84,17 +86,30 @@ export const appRouter = router({
     calendar: adminProcedure
       .input(z.object({ month: z.string().regex(/^\d{4}-\d{2}$/).optional(), status: slotStatus.optional(), federation: z.string().max(80).optional() }).optional())
       .query(({ input }) => listCalendar(input)),
+    departments: adminProcedure
+      .query(() => listDepartments()),
+    interventionTypes: adminProcedure
+      .input(
+        z.object({
+          departmentId: z.number().int().positive().optional(),
+        }).optional(),
+      )
+      .query(({ input }) => listInterventionTypes(input?.departmentId)),
     createSlots: adminWriteProcedure
       .input(z.object({
         dates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(366),
+        departmentId: z.number().int().positive(),
+        interventionTypeId: z.number().int().positive().nullable().optional(),
         federation: z.string().trim().min(2).max(80),
         status: z.enum(["AVAILABLE", "UNAVAILABLE"]).optional(),
       }))
       .mutation(({ input, ctx }) => createSlots(
         input.dates,
+        input.departmentId,
         input.federation,
         ctx.user.email ?? ctx.user.openId,
         input.status ?? "AVAILABLE",
+        input.interventionTypeId,
       )),
     updateSlot: adminWriteProcedure
       .input(z.object({ slotId: z.number().int().positive(), status: slotStatus, note: z.string().max(1000).optional() }))

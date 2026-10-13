@@ -17,7 +17,9 @@ import {
   appSettings,
   auditLog,
   dateSlots,
+  departments,
   emailOutbox,
+  interventionTypes,
   invitationRequests,
   privacyRequests,
   reminderLog,
@@ -637,7 +639,47 @@ export async function dashboard() {
   };
 }
 
-export async function createSlots(dates: string[], federation: string, actor: string, initialStatus: SlotStatus = "AVAILABLE") {
+export async function listDepartments() {
+  const db = await requireDb();
+
+  return db
+    .select()
+    .from(departments)
+    .where(eq(departments.active, "YES"))
+    .orderBy(asc(departments.name));
+}
+
+export async function listInterventionTypes(departmentId?: number) {
+  const db = await requireDb();
+
+  if (departmentId) {
+    return db
+      .select()
+      .from(interventionTypes)
+      .where(
+        and(
+          eq(interventionTypes.departmentId, departmentId),
+          eq(interventionTypes.active, "YES"),
+        ),
+      )
+      .orderBy(asc(interventionTypes.name));
+  }
+
+  return db
+    .select()
+    .from(interventionTypes)
+    .where(eq(interventionTypes.active, "YES"))
+    .orderBy(asc(interventionTypes.name));
+}
+
+export async function createSlots(
+  dates: string[],
+  departmentId: number,
+  federation: string,
+  actor: string,
+  initialStatus: SlotStatus = "AVAILABLE",
+  interventionTypeId?: number | null,
+) {
   const configuration = await getSettingsMap();
   const federations: string[] = Array.isArray(configuration.federations)
     ? configuration.federations as string[]
@@ -654,12 +696,16 @@ export async function createSlots(dates: string[], federation: string, actor: st
     try {
       const inserted = await db.insert(dateSlots).values({
         date: value,
+        departmentId,
+        interventionTypeId: interventionTypeId ?? null,
         federation,
         status: initialStatus,
       });
       const id = insertId(inserted);
       await recordAudit(db, "DATE_CREATED", "date_slot", id, actor, {
         date: value,
+        departmentId,
+        interventionTypeId: interventionTypeId ?? null,
         federation,
         status: initialStatus,
       });

@@ -45,7 +45,12 @@ async function main() {
   let outboxClaimId: number | null = null;
   try {
     for (const date of dates) {
-      const inserted = await db.insert(dateSlots).values({ date, status: "AVAILABLE" });
+      const inserted = await db.insert(dateSlots).values({
+        date,
+        departmentId: 1,
+        federation: "FFN",
+        status: "AVAILABLE",
+      });
       const id = insertId(inserted);
       if (!id) throw new Error("Une date temporaire n’a pas pu être créée.");
       slotIds.push(id);
