@@ -21,6 +21,9 @@ import {
   formOptions,
   listCalendar,
   listDepartments,
+  listManagedDepartments,
+  createDepartment,
+  setDepartmentActive,
   listInterventionTypes,
   saveInterventionType,
   listPublicBootstrap,
@@ -95,6 +98,14 @@ export const appRouter = router({
     formOptions: adminProcedure.query(() => formOptions()),
     departments: adminProcedure
       .query(({ ctx }) => listDepartments(ctx.adminScope)),
+    managedDepartments: primaryAdminProcedure
+      .query(({ ctx }) => listManagedDepartments(ctx.adminScope)),
+    createDepartment: primaryAdminWriteProcedure
+      .input(z.object({ name: z.string().trim().min(1).max(180) }))
+      .mutation(({ input, ctx }) => createDepartment(input.name, ctx.user.email ?? ctx.user.openId, ctx.adminScope)),
+    setDepartmentActive: primaryAdminWriteProcedure
+      .input(z.object({ departmentId: z.number().int().positive(), active: z.enum(["YES", "NO"]) }))
+      .mutation(({ input, ctx }) => setDepartmentActive(input, ctx.user.email ?? ctx.user.openId, ctx.adminScope)),
     interventionTypes: adminProcedure
       .input(
         z.object({

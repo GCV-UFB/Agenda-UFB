@@ -78,6 +78,36 @@ export default function SettingsScreen() {
   const adminDepartments = trpc.admin.departments.useQuery(undefined, {
     enabled: true,
   });
+  const utils = trpc.useUtils();
+  const managedDepartments = trpc.admin.managedDepartments.useQuery(undefined, { enabled: isPrimaryAdmin });
+  const [newDepartmentName, setNewDepartmentName] = useState("");
+  const [departmentConfirmation, setDepartmentConfirmation] = useState<{ id: number; name: string } | null>(null);
+  const [departmentFeedback, setDepartmentFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const refreshDepartments = async () => {
+    await Promise.all([
+      managedDepartments.refetch(), adminDepartments.refetch(), admins.refetch(),
+      utils.public.bootstrap.invalidate(), utils.admin.calendar.invalidate(),
+      utils.admin.dashboard.invalidate(), utils.admin.requests.invalidate(),
+    ]);
+  };
+  const createDepartment = trpc.admin.createDepartment.useMutation({
+    onSuccess: async (department) => {
+      setNewDepartmentName("");
+      setDepartmentFeedback({ type: "success", message: `${department.name} a été créé. Attribuez un responsable, puis configurez ses interventions et ses dates dans AGENDA.` });
+      await refreshDepartments();
+    },
+    onError: (error) => setDepartmentFeedback({ type: "error", message: error.message }),
+  });
+  const setDepartmentActive = trpc.admin.setDepartmentActive.useMutation({
+    onSuccess: async (department) => {
+      setDepartmentConfirmation(null);
+      setDepartmentFeedback({ type: "success", message: department.active === "YES"
+        ? "Département rétabli dans la liste active. Vérifiez ses interventions et ses dates dans AGENDA."
+        : "Département retiré de la liste active. Son historique, ses dates et ses attributions sont conservés." });
+      await refreshDepartments();
+    },
+    onError: (error) => setDepartmentFeedback({ type: "error", message: error.message }),
+  });
 
   const [adminName, setAdminName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
@@ -258,6 +288,45 @@ export default function SettingsScreen() {
   return <ScreenContainer containerClassName="bg-[#F4F8FB]" className="px-5"><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
     <Text style={styles.back} onPress={() => router.back()}>‹ Tableau de bord</Text>
     <Text style={styles.title}>Réglages</Text>
+
+    {isPrimaryAdmin ? (
+      <SectionCard>
+        <Text style={styles.section}>Gestion des départements</Text>
+        <Text style={styles.text}>Créez un département ou retirez-le du formulaire public. La suppression conserve l’historique, les dates et les attributions ; le département peut être rétabli.</Text>
+        {departmentFeedback ? <Text accessibilityRole="alert" style={departmentFeedback.type === "error" ? styles.error : styles.feedbackSuccessText}>{departmentFeedback.message}</Text> : null}
+        <Field label="Nom du nouveau département" value={newDepartmentName} onChangeText={setNewDepartmentName} placeholder="Ex. Trésorerie" />
+        <PrimaryButton label={createDepartment.isPending ? "CRÉATION…" : "CRÉER LE DÉPARTEMENT"} disabled={!newDepartmentName.trim() || createDepartment.isPending || setDepartmentActive.isPending} onPress={() => {
+          setDepartmentFeedback(null);
+          createDepartment.mutate({ name: newDepartmentName.trim() });
+        }} />
+        {managedDepartments.isLoading ? <LoadingBlock label="Chargement des départements…" /> : managedDepartments.error ? <Text style={styles.error}>{managedDepartments.error.message}</Text> : (managedDepartments.data ?? []).map((department) => (
+          <View key={department.id} style={{ paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: GCV.border, gap: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fieldTitle}>{department.name}</Text>
+                <Text style={styles.helper}>{department.active === "YES" ? "ACTIF" : "RETIRÉ DE LA LISTE ACTIVE"}</Text>
+              </View>
+              {departmentConfirmation?.id !== department.id ? (
+                <Pressable accessibilityRole="button" accessibilityLabel={`${department.active === "YES" ? "Supprimer" : "Rétablir"} ${department.name}`} style={styles.retryButton} disabled={setDepartmentActive.isPending || createDepartment.isPending} onPress={() => {
+                  setDepartmentFeedback(null);
+                  if (department.active === "YES") setDepartmentConfirmation({ id: department.id, name: department.name });
+                  else setDepartmentActive.mutate({ departmentId: department.id, active: "YES" });
+                }}>
+                  <Text style={[styles.retryText, department.active === "YES" && { color: GCV.danger }]}>{department.active === "YES" ? "SUPPRIMER" : "RÉTABLIR"}</Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {departmentConfirmation?.id === department.id ? (
+              <View style={{ width: "100%", gap: 8 }} accessibilityRole="alert">
+                <Text style={styles.error}>Retirer {department.name} de la liste active et du formulaire public ? Les dossiers existants et les attributions sont conservés.</Text>
+                <PrimaryButton label={setDepartmentActive.isPending ? "SUPPRESSION…" : "CONFIRMER LA SUPPRESSION"} tone="danger" disabled={setDepartmentActive.isPending || createDepartment.isPending} onPress={() => setDepartmentActive.mutate({ departmentId: department.id, active: "NO" })} />
+                <PrimaryButton label="CONSERVER LE DÉPARTEMENT" tone="secondary" disabled={setDepartmentActive.isPending} onPress={() => setDepartmentConfirmation(null)} />
+              </View>
+            ) : null}
+          </View>
+        ))}
+      </SectionCard>
+    ) : null}
 
     {isPrimaryAdmin ? (
       <SectionCard>
@@ -486,10 +555,10 @@ export default function SettingsScreen() {
               <>
                 <Text style={styles.fieldTitle}>Départements autorisés</Text>
                 <View style={styles.chips}>
-                  {(adminDepartments.data ?? []).map((department) => (
+                  {(managedDepartments.data ?? adminDepartments.data ?? []).filter((department) => department.active === "YES" || editingAdminDepartmentIds.includes(department.id)).map((department) => (
                     <Chip
                       key={department.id}
-                      label={department.name}
+                      label={department.active === "YES" ? department.name : `${department.name} (retiré)`}
                       selected={editingAdminDepartmentIds.includes(department.id)}
                       onPress={() =>
                         setEditingAdminDepartmentIds((current) =>
