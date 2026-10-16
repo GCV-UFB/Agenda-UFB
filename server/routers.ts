@@ -8,6 +8,7 @@ import {
   cancelInvitation,
   createInvitation,
   createAdminAccount,
+  deleteAdminAccount,
   createPrivacyRequest,
   resetAdminPassword,
   updateAdminAccount,
@@ -215,6 +216,14 @@ export const appRouter = router({
           actor: ctx.user.email ?? ctx.user.openId,
         }),
       ),
+
+    deleteAdmin: primaryAdminWriteProcedure
+      .input(z.object({ adminProfileId: z.number().int().positive() }))
+      .mutation(({ input, ctx }) => deleteAdminAccount({
+        ...input,
+        actorUserId: ctx.user.id,
+        actor: ctx.user.email ?? ctx.user.openId,
+      })),
 
     resetAdminPassword: primaryAdminWriteProcedure
       .input(z.object({

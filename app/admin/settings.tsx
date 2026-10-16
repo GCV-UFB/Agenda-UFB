@@ -92,6 +92,19 @@ export default function SettingsScreen() {
   const [editingAdminActive, setEditingAdminActive] = useState<"YES" | "NO">("YES");
   const [editingAdminDepartmentIds, setEditingAdminDepartmentIds] = useState<number[]>([]);
   const [temporaryPassword, setTemporaryPassword] = useState("");
+  const [deletionTarget, setDeletionTarget] = useState<{ id: number; name: string; email: string } | null>(null);
+  const [deletionFeedback, setDeletionFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const deleteAdmin = trpc.admin.deleteAdmin.useMutation({
+    onSuccess: async () => {
+      setDeletionTarget(null);
+      setEditingAdminId(null);
+      setTemporaryPassword("");
+      setAdminEditFeedback(null);
+      setDeletionFeedback({ type: "success", message: "Utilisateur supprimé. Son accès à l’application est retiré." });
+      await Promise.all([admins.refetch(), adminDepartments.refetch()]);
+    },
+    onError: (error) => setDeletionFeedback({ type: "error", message: error.message || "L’utilisateur n’a pas pu être supprimé." }),
+  });
   const [adminEditFeedback, setAdminEditFeedback] = useState<{
     type: "success" | "error";
     message: string;
@@ -305,6 +318,12 @@ export default function SettingsScreen() {
 
         <Text style={styles.fieldTitle}>Responsables actuels</Text>
 
+        {deletionFeedback ? (
+          <Text accessibilityRole="alert" style={deletionFeedback.type === "error" ? styles.error : styles.feedbackSuccessText}>
+            {deletionFeedback.message}
+          </Text>
+        ) : null}
+
         {admins.isLoading ? (
           <LoadingBlock label="Chargement des responsables…" />
         ) : admins.error ? (
@@ -338,7 +357,10 @@ export default function SettingsScreen() {
                 </Text>
 
                 <Pressable
+                  disabled={deleteAdmin.isPending}
                   onPress={() => {
+                    setDeletionTarget(null);
+                    setDeletionFeedback(null);
                     setEditingAdminId(admin.profile.id);
                     setEditingAdminName(admin.user.name ?? "");
                     setEditingAdminEmail(admin.profile.email);
@@ -518,7 +540,7 @@ export default function SettingsScreen() {
                   newPassword: temporaryPassword,
                 });
               }}
-              disabled={resetAdminPassword.isPending}
+              disabled={resetAdminPassword.isPending || deleteAdmin.isPending}
             />
 
             <Text style={styles.helper}>
@@ -560,12 +582,47 @@ export default function SettingsScreen() {
                   departmentIds: editingAdminDepartmentIds,
                 });
               }}
-              disabled={updateAdmin.isPending}
+              disabled={updateAdmin.isPending || deleteAdmin.isPending}
             />
 
+            {isPrimaryAdmin && admins.data?.some((admin) => admin.profile.id === editingAdminId && admin.user.id !== user?.id) ? (
+              <View style={styles.adminSectionSpacing}>
+                <Text style={styles.fieldTitle}>Supprimer l’utilisateur</Text>
+                <Text style={styles.helper}>La suppression retire le compte et son accès. Les invitations, les dates et l’historique sont conservés.</Text>
+                {deletionTarget ? (
+                  <View accessibilityRole="alert">
+                    <Text style={styles.error}>
+                      Supprimer définitivement {deletionTarget.name} ({deletionTarget.email}) ? Cette action est irréversible.
+                    </Text>
+                    <PrimaryButton
+                      label={deleteAdmin.isPending ? "SUPPRESSION…" : "CONFIRMER LA SUPPRESSION"}
+                      tone="danger"
+                      disabled={deleteAdmin.isPending || updateAdmin.isPending || resetAdminPassword.isPending}
+                      onPress={() => deleteAdmin.mutate({ adminProfileId: deletionTarget.id })}
+                    />
+                    <PrimaryButton label="CONSERVER L’UTILISATEUR" tone="secondary" disabled={deleteAdmin.isPending} onPress={() => setDeletionTarget(null)} />
+                  </View>
+                ) : (
+                  <PrimaryButton
+                    label="SUPPRIMER L’UTILISATEUR"
+                    tone="danger"
+                    disabled={deleteAdmin.isPending || updateAdmin.isPending || resetAdminPassword.isPending}
+                    onPress={() => {
+                      const account = admins.data?.find((admin) => admin.profile.id === editingAdminId);
+                      if (!account) return;
+                      setDeletionFeedback(null);
+                      setDeletionTarget({ id: account.profile.id, name: account.user.name || account.profile.email, email: account.profile.email });
+                    }}
+                  />
+                )}
+              </View>
+            ) : null}
+
             <Pressable
+              disabled={deleteAdmin.isPending}
               onPress={() => {
                 setEditingAdminId(null);
+                setDeletionTarget(null);
                 setTemporaryPassword("");
                 setAdminEditFeedback(null);
               }}

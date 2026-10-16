@@ -1457,6 +1457,45 @@ export async function createAdminAccount(input: {
   });
 }
 
+export async function deleteAdminAccount(input: {
+  adminProfileId: number;
+  actorUserId: number;
+  actor: string;
+}) {
+  const db = await requireDb();
+  return db.transaction(async (tx) => {
+    // Serialize deletions of general administrators, and recheck the actor's
+    // access inside the transaction before removing any account data.
+    const profiles = await tx.select().from(adminProfiles)
+      .where(or(eq(adminProfiles.role, "PRIMARY_ADMIN"), eq(adminProfiles.id, input.adminProfileId)))
+      .orderBy(asc(adminProfiles.id)).for("update");
+    const actor = profiles.find((profile) => profile.userId === input.actorUserId);
+    if (!actor || actor.role !== "PRIMARY_ADMIN" || actor.active !== "YES") {
+      throw new Error("Seule l’administration générale UFB peut supprimer un utilisateur.");
+    }
+    const account = profiles.find((profile) => profile.id === input.adminProfileId);
+    if (!account) throw new Error("Compte utilisateur introuvable. Actualisez la liste.");
+    if (account.role === "PRIMARY_ADMIN" && account.active === "YES" &&
+        !profiles.some((profile) => profile.id !== account.id && profile.role === "PRIMARY_ADMIN" && profile.active === "YES")) {
+      throw new Error("Impossible de supprimer le dernier administrateur général UFB actif.");
+    }
+    if (account.userId === input.actorUserId) {
+      throw new Error("Vous ne pouvez pas supprimer votre propre compte.");
+    }
+
+    await tx.delete(adminCredentials).where(eq(adminCredentials.adminProfileId, account.id));
+    await tx.delete(adminDepartments).where(eq(adminDepartments.adminProfileId, account.id));
+    await tx.delete(adminProfiles).where(eq(adminProfiles.id, account.id));
+    await tx.delete(users).where(eq(users.id, account.userId));
+    await recordAudit(tx as DbLike, "ADMIN_ACCOUNT_DELETED", "admin", account.id, input.actor, {
+      email: account.email,
+      role: account.role,
+      userId: account.userId,
+    });
+    return { deleted: true as const, id: account.id };
+  });
+}
+
 export async function updateAdminAccount(input: {
   adminProfileId: number;
   name: string;

@@ -3,11 +3,11 @@ import type { TrpcContext } from "../server/_core/context";
 import type { AdminScope } from "../server/db";
 
 const mocks = vi.hoisted(() => ({
-  scope: vi.fn(), requests: vi.fn(async () => []), decide: vi.fn(), saveType: vi.fn(), options: vi.fn(async () => ({ federations: ["FFN"] })),
+  scope: vi.fn(), requests: vi.fn(async () => []), decide: vi.fn(), saveType: vi.fn(), deleteAdmin: vi.fn(async () => ({ deleted: true })), options: vi.fn(async () => ({ federations: ["FFN"] })),
 }));
 vi.mock("../server/db", () => ({ getAdminScope: mocks.scope }));
 vi.mock("../server/services/gcv", () => ({
-  listRequests: mocks.requests, decideRequest: mocks.decide, saveInterventionType: mocks.saveType, formOptions: mocks.options,
+  listRequests: mocks.requests, decideRequest: mocks.decide, saveInterventionType: mocks.saveType, deleteAdminAccount: mocks.deleteAdmin, formOptions: mocks.options,
 }));
 import { appRouter } from "../server/routers";
 
@@ -43,6 +43,25 @@ describe("Administrator access through the actual router", () => {
   it("rejects access to global settings for department administrators", async () => {
     mocks.scope.mockResolvedValue({ ...readOnly, role: "ADMIN", canWrite: true });
     await expect(appRouter.createCaller(ctx).admin.settings()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  it.each([null, readOnly, { ...readOnly, role: "ADMIN", canWrite: true }])("rejects user deletion without general administrator access: %s", async (scope) => {
+    mocks.scope.mockResolvedValue(scope);
+    await expect(appRouter.createCaller(ctx).admin.deleteAdmin({ adminProfileId: 12 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.deleteAdmin).not.toHaveBeenCalled();
+  });
+  it("rejects unauthenticated user deletion", async () => {
+    await expect(appRouter.createCaller({ ...ctx, user: null }).admin.deleteAdmin({ adminProfileId: 12 })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(mocks.deleteAdmin).not.toHaveBeenCalled();
+  });
+  it("uses the authenticated actor for general administrator deletion", async () => {
+    mocks.scope.mockResolvedValue({ role: "PRIMARY_ADMIN", canWrite: true, allDepartments: true, departmentIds: [] });
+    await appRouter.createCaller(ctx).admin.deleteAdmin({ adminProfileId: 12 });
+    expect(mocks.deleteAdmin).toHaveBeenCalledWith({ adminProfileId: 12, actorUserId: user.id, actor: user.email });
+  });
+  it.each([0, -1, 1.5])("rejects invalid account identifiers for deletion: %s", async (adminProfileId) => {
+    mocks.scope.mockResolvedValue({ role: "PRIMARY_ADMIN", canWrite: true, allDepartments: true, departmentIds: [] });
+    await expect(appRouter.createCaller(ctx).admin.deleteAdmin({ adminProfileId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mocks.deleteAdmin).not.toHaveBeenCalled();
   });
   it.each([0, -1, 1.5])("rejects invalid department identifiers: %s", async (departmentId) => {
     await expect(appRouter.createCaller(ctx).admin.requests({ departmentId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
