@@ -793,6 +793,69 @@ export async function listDepartments(scope: AdminScope) {
     .orderBy(asc(departments.name));
 }
 
+function requireDepartmentManager(scope: AdminScope) {
+  if (scope.role !== "PRIMARY_ADMIN" || !scope.canWrite) {
+    throw new Error("Seule l’administration générale UFB peut gérer les départements.");
+  }
+}
+
+export async function listManagedDepartments(scope: AdminScope) {
+  requireDepartmentManager(scope);
+  const db = await requireDb();
+  return db.select().from(departments).orderBy(asc(departments.name));
+}
+
+function normalizedDepartmentName(name: string) {
+  return name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("fr-FR").replace(/\s+/g, " ").trim();
+}
+
+export async function createDepartment(nameInput: string, actor: string, scope: AdminScope) {
+  requireDepartmentManager(scope);
+  const name = nameInput.replace(/\s+/g, " ").trim();
+  if (!name || name.length > 180) throw new Error("Indiquez un nom de département de 1 à 180 caractères.");
+  const key = normalizedDepartmentName(name);
+  const readableCode = key.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const suffix = createHash("sha256").update(key).digest("hex").slice(0, 8).toUpperCase();
+  const code = !readableCode ? `DEPARTEMENT_${suffix}`
+    : readableCode.length > 80 ? `${readableCode.slice(0, 71)}_${suffix}` : readableCode;
+  const db = await requireDb();
+  try {
+    return await db.transaction(async (tx) => {
+      const existing = await tx.select({ name: departments.name, active: departments.active }).from(departments);
+      const duplicate = existing.find((department) => normalizedDepartmentName(department.name) === key);
+      if (duplicate) throw new Error(duplicate.active === "YES"
+        ? "Ce département existe déjà."
+        : "Ce département a été retiré. Utilisez RÉTABLIR pour le réactiver.");
+      const id = insertId(await tx.insert(departments).values({ code, name, active: "YES" }));
+      if (!id) throw new Error("Le département n’a pas pu être créé.");
+      await recordAudit(tx as DbLike, "DEPARTMENT_CREATED", "department", id, actor, { name, code });
+      return { id, name, active: "YES" as const };
+    });
+  } catch (error) {
+    if ((error as { code?: string; cause?: { code?: string } })?.code === "ER_DUP_ENTRY" ||
+        (error as { cause?: { code?: string } })?.cause?.code === "ER_DUP_ENTRY") {
+      throw new Error("Ce département existe déjà. Actualisez la liste.");
+    }
+    throw error;
+  }
+}
+
+export async function setDepartmentActive(input: { departmentId: number; active: "YES" | "NO" }, actor: string, scope: AdminScope) {
+  requireDepartmentManager(scope);
+  const db = await requireDb();
+  return db.transaction(async (tx) => {
+    const department = (await tx.select().from(departments)
+      .where(eq(departments.id, input.departmentId)).limit(1).for("update"))[0];
+    if (!department) throw new Error("Département introuvable. Actualisez la liste.");
+    if (department.active === input.active) return { id: department.id, active: department.active };
+    // Keep the department's identity, assignments, dates and requests so that
+    // retiring it never deletes history or creates orphaned references.
+    await tx.update(departments).set({ active: input.active }).where(eq(departments.id, department.id));
+    await recordAudit(tx as DbLike, input.active === "YES" ? "DEPARTMENT_RESTORED" : "DEPARTMENT_RETIRED", "department", department.id, actor, { name: department.name });
+    return { id: department.id, active: input.active };
+  });
+}
+
 export async function listInterventionTypes(
   departmentId: number | undefined,
   scope: AdminScope,
@@ -1580,19 +1643,25 @@ export async function updateAdminAccount(input: {
 
     if (input.role !== "PRIMARY_ADMIN") {
       const validDepartments = await tx
-        .select({ id: departments.id })
+        .select({ id: departments.id, active: departments.active })
         .from(departments)
         .where(
-          and(
-            inArray(departments.id, departmentIds),
-            eq(departments.active, "YES"),
-          ),
+          inArray(departments.id, departmentIds),
         );
 
       if (validDepartments.length !== departmentIds.length) {
         throw new Error(
           "Un ou plusieurs départements sélectionnés sont invalides ou inactifs.",
         );
+      }
+
+      // Existing assignments to retired departments remain editable so that
+      // changing a user's name or password does not remove historical access.
+      const retiredIds = validDepartments.filter((department) => department.active !== "YES").map((department) => department.id);
+      if (retiredIds.length) {
+        const retainedAssignments = await tx.select({ departmentId: adminDepartments.departmentId }).from(adminDepartments)
+          .where(and(eq(adminDepartments.adminProfileId, input.adminProfileId), inArray(adminDepartments.departmentId, retiredIds)));
+        if (retainedAssignments.length !== retiredIds.length) throw new Error("Un département retiré ne peut pas être attribué à un nouveau responsable.");
       }
     }
 
