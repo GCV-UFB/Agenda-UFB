@@ -5,6 +5,7 @@ import expoConfig from "eslint-config-expo/flat.js";
 export default defineConfig([
   expoConfig,
   {
-    ignores: ["dist/*"],
+    ignores: ["dist/**", "backup_gcv_migrations/**"],
   },
+  { files: ["server/**/*.{ts,js}", "scripts/**/*.{ts,js}", "tests/**/*.ts"], rules: { "expo/no-dynamic-env-var": "off" } },
 ]);

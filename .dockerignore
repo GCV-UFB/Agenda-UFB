@@ -1,0 +1,16 @@
+node_modules
+.git
+.env
+.env.*
+.expo
+dist
+.codex
+.agents
+backup_gcv_migrations
+**/*.backup-*
+*.log
+.DS_Store
+
+# Local development artifacts
+artifacts
+/tsc

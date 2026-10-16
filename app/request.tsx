@@ -1,20 +1,22 @@
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
-import { DEFAULT_FIELDS, INTERVENTION_TYPES } from "@/shared/gcv";
+import { DEFAULT_FIELDS } from "@/shared/gcv";
 import { EmptyState, Field, GCV, LoadingBlock, PrimaryButton, SectionCard } from "@/components/gcv-ui";
 import { ScreenContainer } from "@/components/screen-container";
 import { trpc } from "@/lib/trpc";
 
-type ExtraField = "interventionType" | "message" | "desiredTime" | "churchAddress";
+type ExtraField = "message" | "desiredTime" | "churchAddress";
 type FieldRule = { visible: boolean; required: boolean };
+
 type FormData = {
+  departmentId: number;
   federation: string;
+  interventionTypeId: number;
   church: string;
   contactName: string;
   email: string;
   phone: string;
-  interventionType: string;
   message: string;
   desiredTime: string;
   churchAddress: string;
@@ -22,7 +24,6 @@ type FormData = {
 };
 
 const OPTIONAL_LABELS: Record<ExtraField, string> = {
-  interventionType: "Type d’intervention",
   message: "Message ou informations complémentaires",
   desiredTime: "Heure souhaitée",
   churchAddress: "Adresse de l’église",
@@ -32,126 +33,567 @@ export default function RequestScreen() {
   const router = useRouter();
   const bootstrap = trpc.public.bootstrap.useQuery();
   const submit = trpc.public.submitRequest.useMutation();
+
   const [consent, setConsent] = useState(false);
   const [summaryConfirmed, setSummaryConfirmed] = useState(false);
-  const [form, setForm] = useState<FormData>({ federation: "", church: "", contactName: "", email: "", phone: "", interventionType: "Prédication", message: "", desiredTime: "", churchAddress: "", dateSlotId: 0 });
-  const fields = (bootstrap.data?.fields ?? DEFAULT_FIELDS) as Record<ExtraField, FieldRule>;
-  const dates = useMemo(
-    () => (bootstrap.data?.dates ?? []).filter(
-      (slot) => slot.federation === form.federation
-    ),
-    [bootstrap.data?.dates, form.federation]
+
+  const [form, setForm] = useState<FormData>({
+    departmentId: 0,
+    federation: "",
+    interventionTypeId: 0,
+    church: "",
+    contactName: "",
+    email: "",
+    phone: "",
+    message: "",
+    desiredTime: "",
+    churchAddress: "",
+    dateSlotId: 0,
+  });
+
+  const fields = (bootstrap.data?.fields ?? DEFAULT_FIELDS) as Record<string, FieldRule>;
+
+  const departments = bootstrap.data?.departments ?? [];
+
+  const interventionTypes = useMemo(
+    () =>
+      (bootstrap.data?.interventionTypes ?? []).filter(
+        (type) => type.departmentId === form.departmentId,
+      ),
+    [bootstrap.data?.interventionTypes, form.departmentId],
   );
-  const requiredExtraMissing = (Object.keys(OPTIONAL_LABELS) as ExtraField[]).some((key) => fields[key]?.visible && fields[key]?.required && !form[key].trim());
-  const emailReady = bootstrap.data?.emailReady === true;
+
+  const dates = useMemo(
+    () =>
+      (bootstrap.data?.dates ?? []).filter(
+        (slot) =>
+          slot.departmentId === form.departmentId &&
+          slot.federation === form.federation,
+      ),
+    [bootstrap.data?.dates, form.departmentId, form.federation],
+  );
+
+  const selectedDepartment = departments.find(
+    (department) => department.id === form.departmentId,
+  );
+
+  const selectedInterventionType = interventionTypes.find(
+    (type) => type.id === form.interventionTypeId,
+  );
+
   const selectedSlot = dates.find((slot) => slot.id === form.dateSlotId);
-  const canSend = Boolean(emailReady && consent && summaryConfirmed && form.dateSlotId && form.church.trim() && form.contactName.trim() && form.email.trim() && form.phone.trim() && !requiredExtraMissing);
+
+  const requiredExtraMissing = (Object.keys(OPTIONAL_LABELS) as ExtraField[]).some(
+    (key) => fields[key]?.visible && fields[key]?.required && !form[key].trim(),
+  );
+
+  const emailReady = bootstrap.data?.emailReady === true;
+
+  const canSend = Boolean(
+    consent &&
+      summaryConfirmed &&
+      form.departmentId &&
+      form.federation &&
+      form.interventionTypeId &&
+      selectedSlot &&
+      selectedDepartment &&
+      selectedInterventionType &&
+      form.church.trim() &&
+      form.contactName.trim() &&
+      form.email.trim() &&
+      form.phone.trim() &&
+      !requiredExtraMissing &&
+      !submit.isPending,
+  );
+
   const error = submit.error?.message;
+
   const set = (key: keyof FormData, value: string | number) => {
     setForm((current) => ({ ...current, [key]: value }));
-    if (key === "church" || key === "interventionType" || key === "dateSlotId" || key === "federation") {
-      setSummaryConfirmed(false);
-    }
+    setSummaryConfirmed(false);
   };
-  const label = (key: ExtraField) => `${OPTIONAL_LABELS[key]}${fields[key]?.required ? " *" : ""}`;
+
+  const label = (key: ExtraField) =>
+    `${OPTIONAL_LABELS[key]}${fields[key]?.required ? " *" : ""}`;
+
+  const selectDepartment = (departmentId: number) => {
+    setForm((current) => ({
+      ...current,
+      departmentId,
+      federation: "",
+      interventionTypeId: 0,
+      dateSlotId: 0,
+    }));
+    setSummaryConfirmed(false);
+  };
+
+  const selectFederation = (federation: string) => {
+    setForm((current) => ({
+      ...current,
+      federation,
+      dateSlotId: 0,
+    }));
+    setSummaryConfirmed(false);
+  };
+
+  const selectInterventionType = (interventionTypeId: number) => {
+    setForm((current) => ({
+      ...current,
+      interventionTypeId,
+    }));
+    setSummaryConfirmed(false);
+  };
 
   const send = async () => {
     if (!canSend) return;
-    const outcome = await submit.mutateAsync({ ...form, consent: true });
-    router.replace({ pathname: "/request/success" as never, params: { id: outcome.submissionId, emailStatus: outcome.adminEmailStatus } as never });
+
+    try {
+    const outcome = await submit.mutateAsync({
+      dateSlotId: form.dateSlotId,
+      federation: form.federation,
+      church: form.church,
+      contactName: form.contactName,
+      email: form.email,
+      phone: form.phone,
+      interventionTypeId: form.interventionTypeId,
+      message: form.message,
+      desiredTime: form.desiredTime,
+      churchAddress: form.churchAddress,
+      consent: true,
+    });
+
+    router.replace({
+      pathname: "/request/success" as never,
+      params: {
+        id: outcome.submissionId,
+        emailStatus: outcome.adminEmailStatus,
+      } as never,
+    });
+    } catch {
+      // The mutation error is displayed below; refresh dates after a competing reservation.
+      void bootstrap.refetch();
+    }
   };
 
-  return <ScreenContainer containerClassName="bg-[#F4F8FB]" className="px-5">
-    <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      <Pressable onPress={() => router.back()}><Text style={styles.back}>‹ Accueil</Text></Pressable>
-      <View>
-        <Text style={styles.kicker}>GCV-UFB</Text>
-        <Text style={styles.title}>Invitation de prédication — GCV UFB</Text>
-        <Text style={styles.intro}>Vous souhaitez inviter le responsable de la Gestion Chrétienne de la Vie de l’Union Franco-Belge pour une prédication, une formation ou une intervention dans votre église ? Sélectionnez ci-dessous une date actuellement disponible et transmettez votre demande. Votre demande sera ensuite examinée et vous recevrez une confirmation par e-mail.</Text>
-      </View>
-      {bootstrap.isLoading ? <LoadingBlock label="Recherche des disponibilités…" /> : bootstrap.error ? <SectionCard><Text style={styles.error}>Les disponibilités ne peuvent pas être chargées pour le moment. Veuillez réessayer plus tard.</Text></SectionCard> : <>
-        {bootstrap.data && !emailReady ? <View style={styles.mailWarning}><Text style={styles.mailWarningTitle}>Envoi temporairement indisponible</Text><Text style={styles.mailWarningText}>Le service d’envoi Gmail API doit d’abord être configuré par l’administrateur. Aucune demande ne sera acceptée tant que la notification ne peut pas être envoyée.</Text></View> : null}
-        <SectionCard>
-          <Text style={styles.sectionTitle}>1. Fédération *</Text>
-          <Text style={styles.hint}>Choisissez votre fédération pour afficher les dates qui lui sont réservées.</Text>
-          <View style={styles.optionRow}>{(bootstrap.data?.federations as string[] | undefined ?? ["FFN", "FFS", "FBL"]).map((item) => <Pressable key={item} onPress={() => { setForm((current) => ({ ...current, federation: item, dateSlotId: 0 })); setSummaryConfirmed(false); }} accessibilityRole="radio" accessibilityState={{ selected: form.federation === item }} style={[styles.federationOption, form.federation === item && styles.optionSelected]}><Text style={[styles.federationOptionText, form.federation === item && styles.optionTextSelected]}>{item}</Text></Pressable>)}</View>
-        </SectionCard>
-        <SectionCard>
-          <Text style={styles.sectionTitle}>2. Date souhaitée *</Text>
-          {!form.federation ? (
-            <EmptyState title="Choisissez d’abord votre fédération" detail="Les dates disponibles correspondant à votre fédération apparaîtront ensuite ici." />
-          ) : <>
-            <Text style={styles.hint}>Seules les dates actuellement disponibles pour {form.federation} sont proposées.</Text>
-            {dates.length === 0 ? <EmptyState title={`Aucune date disponible pour ${form.federation}`} detail="Veuillez revenir prochainement ou contacter la GCV-UFB." /> : <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateRow}>{dates.map((slot) => <Pressable key={slot.id} onPress={() => { set("dateSlotId", slot.id); setSummaryConfirmed(false); }} accessibilityRole="radio" accessibilityState={{ selected: form.dateSlotId === slot.id }} style={[styles.dateChip, form.dateSlotId === slot.id && styles.dateChipSelected]}><Text style={[styles.dateDay, form.dateSlotId === slot.id && styles.dateTextSelected]}>{new Date(`${slot.date}T12:00:00`).toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })}</Text><Text style={[styles.dateYear, form.dateSlotId === slot.id && styles.dateTextSelected]}>{new Date(`${slot.date}T12:00:00`).getFullYear()}</Text></Pressable>)}</ScrollView>}
-          </>}
-        </SectionCard>
-        <SectionCard>
-          <Text style={styles.sectionTitle}>3. Vos coordonnées</Text>
-          <Field label="Église *" value={form.church} onChangeText={(value) => set("church", value)} placeholder="Nom de l’église" />
-          <Field label="Nom et prénom *" value={form.contactName} onChangeText={(value) => set("contactName", value)} placeholder="Votre nom complet" />
-          <Field label="Adresse e-mail *" value={form.email} onChangeText={(value) => set("email", value)} placeholder="nom@exemple.fr" autoCapitalize="none" keyboardType="email-address" />
-          <Field label="Téléphone *" value={form.phone} onChangeText={(value) => set("phone", value)} placeholder="06 00 00 00 00" keyboardType="phone-pad" />
-        </SectionCard>
-        <SectionCard>
-          <Text style={styles.sectionTitle}>4. Intervention</Text>
-          {fields.interventionType?.visible ? <><Text style={styles.fieldLabel}>{label("interventionType")}</Text><View style={styles.optionRow}>{INTERVENTION_TYPES.map((item) => <Pressable key={item} onPress={() => set("interventionType", item)} accessibilityRole="radio" accessibilityState={{ selected: form.interventionType === item }} style={[styles.typeOption, form.interventionType === item && styles.optionSelected]}><Text style={[styles.optionText, form.interventionType === item && styles.optionTextSelected]}>{item}</Text></Pressable>)}</View></> : null}
-          {fields.message?.visible ? <Field label={label("message")} value={form.message} onChangeText={(value) => set("message", value)} placeholder="Précisions utiles pour l’organisation" multiline /> : null}
-          {fields.desiredTime?.visible ? <Field label={label("desiredTime")} value={form.desiredTime} onChangeText={(value) => set("desiredTime", value)} placeholder="Ex. 11 h 00" /> : null}
-          {fields.churchAddress?.visible ? <Field label={label("churchAddress")} value={form.churchAddress} onChangeText={(value) => set("churchAddress", value)} placeholder="Adresse postale" multiline /> : null}
-        </SectionCard>
-        <SectionCard>
-          <Text style={styles.sectionTitle}>5. Vérifiez votre demande</Text>
-          <Text style={styles.hint}>Avant l’envoi, vérifiez particulièrement que la fédération sélectionnée correspond bien à votre église ou à votre district.</Text>
+  return (
+    <ScreenContainer containerClassName="bg-[#F4F8FB]" className="px-5">
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Pressable onPress={() => router.back()}>
+          <Text style={styles.back}>‹ Accueil</Text>
+        </Pressable>
 
-          <View style={styles.summaryBox}>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Fédération</Text>
-              <Text style={styles.summaryValue}>{form.federation || "—"}</Text>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Église</Text>
-              <Text style={styles.summaryValue}>{form.church.trim() || "—"}</Text>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Date souhaitée</Text>
-              <Text style={styles.summaryValue}>
-                {selectedSlot ? new Date(`${selectedSlot.date}T12:00:00`).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" }) : "—"}
-              </Text>
-            </View>
-            {fields.interventionType?.visible ? <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Intervention</Text>
-              <Text style={styles.summaryValue}>{form.interventionType || "—"}</Text>
-            </View> : null}
-          </View>
-
-          <Pressable
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: summaryConfirmed }}
-            onPress={() => setSummaryConfirmed((current) => !current)}
-            style={styles.consentRow}
-          >
-            <View style={[styles.checkbox, summaryConfirmed && styles.checkboxChecked]}>
-              <Text style={styles.checkmark}>{summaryConfirmed ? "✓" : ""}</Text>
-            </View>
-            <Text style={styles.consentText}>
-              Je confirme que mon église ou mon district appartient à la {form.federation || "fédération sélectionnée"} et que les informations ci-dessus sont correctes. *
-            </Text>
-          </Pressable>
-        </SectionCard>
-
-        <View style={styles.notice}>
-          <Text style={styles.noticeText}>Les informations recueillies sont utilisées par l’Union Franco-Belge des Églises adventistes de la France, Belgique et Luxembourg (UFB), par l’intermédiaire de son département GCV-UFB, afin de recevoir, examiner et organiser votre demande d’intervention et d’assurer les échanges nécessaires à son suivi.</Text>
-          <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: consent }} onPress={() => setConsent((current) => !current)} style={styles.consentRow}>
-            <View style={[styles.checkbox, consent && styles.checkboxChecked]}><Text style={styles.checkmark}>{consent ? "✓" : ""}</Text></View>
-            <Text style={styles.consentText}>Je confirme avoir pris connaissance des informations relatives au traitement de mes données personnelles. *</Text>
-          </Pressable>
-          <Pressable onPress={() => router.push("/privacy" as never)}><Text style={styles.privacyLink}>Lire la politique de confidentialité et connaître mes droits</Text></Pressable>
+        <View>
+          <Text style={styles.kicker}>UNION FRANCO-BELGE</Text>
+          <Text style={styles.title}>Demander une intervention</Text>
+          <Text style={styles.intro}>
+            Choisissez le département de l’Union franco-belge que vous souhaitez solliciter,
+            votre fédération, le type d’intervention et une date disponible. Votre demande
+            sera ensuite transmise au responsable du département concerné.
+          </Text>
         </View>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        <PrimaryButton label={submit.isPending ? "ENVOI EN COURS…" : "ENVOYER LA DEMANDE"} disabled={!canSend || submit.isPending} icon="send-outline" onPress={send} />
-      </>}
-    </ScrollView>
-  </ScreenContainer>;
+
+        {bootstrap.isLoading ? (
+          <LoadingBlock label="Recherche des disponibilités…" />
+        ) : bootstrap.error ? (
+          <SectionCard>
+            <Text style={styles.error}>
+              Les disponibilités ne peuvent pas être chargées pour le moment.
+              Veuillez réessayer plus tard.
+            </Text>
+          </SectionCard>
+        ) : (
+          <>
+            {bootstrap.data && !emailReady ? (
+              <View style={styles.mailWarning}>
+                <Text style={styles.mailWarningTitle}>
+                  Demandes ouvertes
+                </Text>
+                <Text style={styles.mailWarningText}>
+                  Votre demande sera enregistrée et pourra être consultée par le département concerné. Les notifications par e-mail ne sont pas encore activées. Conservez votre numéro de référence après l’envoi.
+                </Text>
+              </View>
+            ) : null}
+
+            <SectionCard>
+              <Text style={styles.sectionTitle}>1. Département *</Text>
+              <Text style={styles.hint}>
+                Choisissez le département de l’Union franco-belge que vous souhaitez solliciter.
+              </Text>
+
+              <View style={styles.optionRow}>
+                {departments.map((department) => (
+                  <Pressable
+                    key={department.id}
+                    onPress={() => selectDepartment(department.id)}
+                    accessibilityRole="radio"
+                    accessibilityState={{
+                      selected: form.departmentId === department.id,
+                    }}
+                    style={[
+                      styles.typeOption,
+                      form.departmentId === department.id && styles.optionSelected,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.optionText,
+                        form.departmentId === department.id &&
+                          styles.optionTextSelected,
+                      ]}
+                    >
+                      {department.name}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </SectionCard>
+
+            <SectionCard>
+              <Text style={styles.sectionTitle}>2. Fédération *</Text>
+
+              {!form.departmentId ? (
+                <EmptyState
+                  title="Choisissez d’abord un département"
+                  detail="Vous pourrez ensuite sélectionner votre fédération."
+                />
+              ) : (
+                <>
+                  <Text style={styles.hint}>
+                    Indiquez la fédération à laquelle appartient votre église ou votre district.
+                  </Text>
+
+                  <View style={styles.optionRow}>
+                    {(bootstrap.data?.federations as string[] | undefined ?? [
+                      "FFN",
+                      "FFS",
+                      "FBL",
+                    ]).map((item) => (
+                      <Pressable
+                        key={item}
+                        onPress={() => selectFederation(item)}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected: form.federation === item }}
+                        style={[
+                          styles.federationOption,
+                          form.federation === item && styles.optionSelected,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.federationOptionText,
+                            form.federation === item && styles.optionTextSelected,
+                          ]}
+                        >
+                          {item}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </>
+              )}
+            </SectionCard>
+
+            <SectionCard>
+              <Text style={styles.sectionTitle}>3. Type d’intervention *</Text>
+
+              {!form.departmentId ? (
+                <EmptyState
+                  title="Choisissez d’abord un département"
+                  detail="Les interventions proposées par ce département apparaîtront ici."
+                />
+              ) : interventionTypes.length === 0 ? (
+                <EmptyState
+                  title="Aucun type d’intervention disponible"
+                  detail="Ce département n’a pas encore configuré ses types d’intervention."
+                />
+              ) : (
+                <View style={styles.optionRow}>
+                  {interventionTypes.map((item) => (
+                    <Pressable
+                      key={item.id}
+                      onPress={() => selectInterventionType(item.id)}
+                      accessibilityRole="radio"
+                      accessibilityState={{
+                        selected: form.interventionTypeId === item.id,
+                      }}
+                      style={[
+                        styles.typeOption,
+                        form.interventionTypeId === item.id &&
+                          styles.optionSelected,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.optionText,
+                          form.interventionTypeId === item.id &&
+                            styles.optionTextSelected,
+                        ]}
+                      >
+                        {item.name}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+            </SectionCard>
+
+            <SectionCard>
+              <Text style={styles.sectionTitle}>4. Date souhaitée *</Text>
+
+              {!form.departmentId || !form.federation ? (
+                <EmptyState
+                  title="Choisissez d’abord le département et la fédération"
+                  detail="Les dates disponibles correspondantes apparaîtront ensuite ici."
+                />
+              ) : (
+                <>
+                  <Text style={styles.hint}>
+                    Seules les dates actuellement disponibles pour {form.federation} sont proposées.
+                  </Text>
+
+                  {dates.length === 0 ? (
+                    <EmptyState
+                      title={`Aucune date disponible pour ${form.federation}`}
+                      detail="Veuillez revenir prochainement ou contacter le département concerné."
+                    />
+                  ) : (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.dateRow}
+                    >
+                      {dates.map((slot) => (
+                        <Pressable
+                          key={slot.id}
+                          onPress={() => set("dateSlotId", slot.id)}
+                          accessibilityRole="radio"
+                          accessibilityState={{
+                            selected: form.dateSlotId === slot.id,
+                          }}
+                          style={[
+                            styles.dateChip,
+                            form.dateSlotId === slot.id &&
+                              styles.dateChipSelected,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.dateDay,
+                              form.dateSlotId === slot.id &&
+                                styles.dateTextSelected,
+                            ]}
+                          >
+                            {new Date(`${slot.date}T12:00:00`).toLocaleDateString(
+                              "fr-FR",
+                              { day: "2-digit", month: "short" },
+                            )}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.dateYear,
+                              form.dateSlotId === slot.id &&
+                                styles.dateTextSelected,
+                            ]}
+                          >
+                            {new Date(`${slot.date}T12:00:00`).getFullYear()}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  )}
+                </>
+              )}
+            </SectionCard>
+
+            <SectionCard>
+              <Text style={styles.sectionTitle}>5. Vos coordonnées</Text>
+
+              <Field
+                label="Église *"
+                value={form.church}
+                onChangeText={(value) => set("church", value)}
+                placeholder="Nom de l’église"
+              />
+
+              <Field
+                label="Nom et prénom *"
+                value={form.contactName}
+                onChangeText={(value) => set("contactName", value)}
+                placeholder="Votre nom complet"
+              />
+
+              <Field
+                label="Adresse e-mail *"
+                value={form.email}
+                onChangeText={(value) => set("email", value)}
+                placeholder="nom@exemple.fr"
+                autoCapitalize="none"
+                keyboardType="email-address"
+              />
+
+              <Field
+                label="Téléphone *"
+                value={form.phone}
+                onChangeText={(value) => set("phone", value)}
+                placeholder="06 00 00 00 00"
+                keyboardType="phone-pad"
+              />
+            </SectionCard>
+
+            <SectionCard>
+              <Text style={styles.sectionTitle}>
+                6. Informations complémentaires
+              </Text>
+
+              {fields.message?.visible ? (
+                <Field
+                  label={label("message")}
+                  value={form.message}
+                  onChangeText={(value) => set("message", value)}
+                  placeholder="Précisez ici toute autre demande ou besoin particulier"
+                  multiline
+                />
+              ) : null}
+
+              {fields.desiredTime?.visible ? (
+                <Field
+                  label={label("desiredTime")}
+                  value={form.desiredTime}
+                  onChangeText={(value) => set("desiredTime", value)}
+                  placeholder="Ex. 11 h 00"
+                />
+              ) : null}
+
+              {fields.churchAddress?.visible ? (
+                <Field
+                  label={label("churchAddress")}
+                  value={form.churchAddress}
+                  onChangeText={(value) => set("churchAddress", value)}
+                  placeholder="Adresse postale"
+                  multiline
+                />
+              ) : null}
+            </SectionCard>
+
+            <SectionCard>
+              <Text style={styles.sectionTitle}>
+                7. Vérifiez votre demande
+              </Text>
+
+              <View style={styles.summaryBox}>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Département</Text>
+                  <Text style={styles.summaryValue}>
+                    {selectedDepartment?.name ?? "—"}
+                  </Text>
+                </View>
+
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Fédération</Text>
+                  <Text style={styles.summaryValue}>
+                    {form.federation || "—"}
+                  </Text>
+                </View>
+
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Intervention</Text>
+                  <Text style={styles.summaryValue}>
+                    {selectedInterventionType?.name ?? "—"}
+                  </Text>
+                </View>
+
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Église</Text>
+                  <Text style={styles.summaryValue}>
+                    {form.church.trim() || "—"}
+                  </Text>
+                </View>
+
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Date souhaitée</Text>
+                  <Text style={styles.summaryValue}>
+                    {selectedSlot
+                      ? new Date(`${selectedSlot.date}T12:00:00`).toLocaleDateString(
+                          "fr-FR",
+                          { day: "2-digit", month: "long", year: "numeric" },
+                        )
+                      : "—"}
+                  </Text>
+                </View>
+              </View>
+
+              <Pressable
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: summaryConfirmed }}
+                onPress={() => setSummaryConfirmed((current) => !current)}
+                style={styles.consentRow}
+              >
+                <View
+                  style={[
+                    styles.checkbox,
+                    summaryConfirmed && styles.checkboxChecked,
+                  ]}
+                >
+                  <Text style={styles.checkmark}>
+                    {summaryConfirmed ? "✓" : ""}
+                  </Text>
+                </View>
+
+                <Text style={styles.consentText}>
+                  Je confirme que les informations ci-dessus sont correctes. *
+                </Text>
+              </Pressable>
+            </SectionCard>
+
+            <View style={styles.notice}>
+              <Text style={styles.noticeText}>
+                Les informations recueillies sont utilisées par l’Union franco-belge
+                des Églises adventistes afin de recevoir, examiner et organiser votre
+                demande d’intervention et d’assurer les échanges nécessaires à son suivi.
+              </Text>
+
+              <Pressable
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: consent }}
+                onPress={() => setConsent((current) => !current)}
+                style={styles.consentRow}
+              >
+                <View
+                  style={[styles.checkbox, consent && styles.checkboxChecked]}
+                >
+                  <Text style={styles.checkmark}>{consent ? "✓" : ""}</Text>
+                </View>
+
+                <Text style={styles.consentText}>
+                  Je confirme avoir pris connaissance des informations relatives
+                  au traitement de mes données personnelles. *
+                </Text>
+              </Pressable>
+
+              <Pressable onPress={() => router.push("/privacy" as never)}>
+                <Text style={styles.privacyLink}>
+                  Lire la politique de confidentialité et connaître mes droits
+                </Text>
+              </Pressable>
+            </View>
+
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+
+            <PrimaryButton
+              label={
+                submit.isPending
+                  ? "ENVOI EN COURS…"
+                  : "ENVOYER LA DEMANDE"
+              }
+              disabled={!canSend || submit.isPending}
+              icon="send-outline"
+              onPress={send}
+            />
+          </>
+        )}
+      </ScrollView>
+    </ScreenContainer>
+  );
 }
 
 const styles = StyleSheet.create<any>({

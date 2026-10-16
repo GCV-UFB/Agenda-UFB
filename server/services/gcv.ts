@@ -13,6 +13,8 @@ import {
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   actionTokens,
+  adminCredentials,
+  adminDepartments,
   adminProfiles,
   appSettings,
   auditLog,
@@ -31,12 +33,32 @@ import {
   ADMIN_EMAIL,
   DEFAULT_FIELDS,
   FEDERATIONS,
-  INTERVENTION_TYPES,
   isoDate,
   toFrenchDate,
   type SlotStatus,
 } from "../../shared/gcv";
-import { getDb } from "../db";
+import { getDb, type AdminScope } from "../db";
+import { hashPassword } from "../_core/password";
+function departmentScopeCondition(
+  scope: AdminScope,
+  column: typeof dateSlots.departmentId | typeof invitationRequests.departmentId | typeof departments.id | typeof interventionTypes.departmentId,
+) {
+  if (scope.allDepartments) return undefined;
+  if (!scope.departmentIds.length) return eq(column, -1);
+  return inArray(column, scope.departmentIds);
+}
+
+function assertDepartmentAccess(
+  scope: AdminScope,
+  departmentId: number,
+) {
+  if (scope.allDepartments) return;
+
+  if (!scope.departmentIds.includes(departmentId)) {
+    throw new Error("Vous n’êtes pas autorisé à administrer ce département.");
+  }
+}
+
 import { deliverOutbox, emailShell } from "./email";
 import { gmailConnectionStatus } from "./gmail-smtp";
 import {
@@ -60,6 +82,7 @@ type DbLike = any;
 type RequestWithSlot = {
   request: typeof invitationRequests.$inferSelect;
   slot: typeof dateSlots.$inferSelect;
+  department?: typeof departments.$inferSelect | null;
 };
 
 export class SlotTakenError extends Error {
@@ -183,22 +206,55 @@ async function getSettingsMap() {
   return values;
 }
 
+export async function formOptions() {
+  const values = await getSettingsMap();
+  return { federations: Array.isArray(values.federations) ? values.federations as string[] : [...FEDERATIONS] };
+}
+
 export async function listPublicBootstrap() {
   const db = await requireDb();
   const slots = await db
-    .select()
+    .select({ id: dateSlots.id, date: dateSlots.date, departmentId: dateSlots.departmentId, federation: dateSlots.federation })
     .from(dateSlots)
+    .innerJoin(departments, and(eq(dateSlots.departmentId, departments.id), eq(departments.active, "YES")))
     .where(and(eq(dateSlots.status, "AVAILABLE"), gte(dateSlots.date, today())))
     .orderBy(asc(dateSlots.date));
+  const departmentRows = await db
+    .select()
+    .from(departments)
+    .where(eq(departments.active, "YES"))
+    .orderBy(asc(departments.name));
+
+  const interventionTypeRows = await db
+    .select()
+    .from(interventionTypes)
+    .where(eq(interventionTypes.active, "YES"))
+    .orderBy(asc(interventionTypes.name));
+
   const settings = await getSettingsMap();
   const mail = await gmailConnectionStatus();
+
   return {
     dates: slots,
+    departments: departmentRows,
+    interventionTypes: interventionTypeRows,
     federations: Array.isArray(settings.federations) ? settings.federations : FEDERATIONS,
     fields: settings.fields ?? DEFAULT_FIELDS,
-    interventionTypes: INTERVENTION_TYPES,
     emailReady: mail.configured && mail.connected,
   };
+}
+
+async function departmentNotificationRecipients(db: DbLike, departmentId: number): Promise<string[]> {
+  const admins: { email: string }[] = await db
+    .select({ email: adminProfiles.email })
+    .from(adminProfiles)
+    .leftJoin(adminDepartments, and(eq(adminDepartments.adminProfileId, adminProfiles.id), eq(adminDepartments.departmentId, departmentId)))
+    .where(and(eq(adminProfiles.active, "YES"), or(
+      eq(adminProfiles.role, "PRIMARY_ADMIN"),
+      and(eq(adminProfiles.role, "ADMIN"), eq(adminDepartments.departmentId, departmentId)),
+    )));
+  // Preserve the pilot's central mailbox and notify the authorized department managers.
+  return [...new Set([ADMIN_EMAIL, ...admins.map((admin) => admin.email.trim().toLowerCase())])];
 }
 
 export async function createInvitation(input: {
@@ -208,7 +264,7 @@ export async function createInvitation(input: {
   contactName: string;
   email: string;
   phone: string;
-  interventionType?: string | null;
+  interventionTypeId: number;
   message?: string | null;
   desiredTime?: string | null;
   churchAddress?: string | null;
@@ -216,18 +272,15 @@ export async function createInvitation(input: {
   notify?: boolean;
   }) {
   if (input.consent !== true) throw new Error("Votre consentement est requis pour envoyer cette demande.");
-  if (input.notify !== false) {
-    const mail = await gmailConnectionStatus();
-    if (!mail.configured || !mail.connected) {
-      throw new Error("Le formulaire est temporairement indisponible : le service d’envoi Gmail de la GCV-UFB doit être configuré afin que l’équipe reçoive les demandes.");
-    }
-  }
+  const mail = input.notify === false
+    ? { configured: false, connected: false }
+    : await gmailConnectionStatus();
+  const shouldNotify = process.env.UFB_EMAIL_NOTIFICATIONS_ENABLED === "true" && input.notify !== false && mail.configured && mail.connected;
   const configuration = await getSettingsMap();
   const federations: string[] = Array.isArray(configuration.federations) ? configuration.federations as string[] : [...FEDERATIONS];
   if (!federations.includes(input.federation)) throw new Error("Veuillez choisir une fédération disponible.");
   const fieldSettings = { ...DEFAULT_FIELDS, ...(configuration.fields && typeof configuration.fields === "object" ? configuration.fields : {}) } as Record<string, { visible?: boolean; required?: boolean }>;
   const extraValues: Record<string, unknown> = {
-    interventionType: input.interventionType,
     message: input.message,
     desiredTime: input.desiredTime,
     churchAddress: input.churchAddress,
@@ -238,7 +291,6 @@ export async function createInvitation(input: {
     if (rules?.visible !== false && rules?.required && !String(value ?? "").trim()) throw new Error(`${fieldLabels[key]} est obligatoire.`);
   }
   const storedField = (key: string, value: string | null | undefined) => fieldSettings[key]?.visible === false ? null : value?.trim() || null;
-  const interventionType = storedField("interventionType", input.interventionType);
   const message = storedField("message", input.message);
   const desiredTime = storedField("desiredTime", input.desiredTime);
   const churchAddress = storedField("churchAddress", input.churchAddress);
@@ -253,6 +305,31 @@ export async function createInvitation(input: {
       slot.federation !== input.federation
     ) throw new SlotTakenError();
 
+    const department = (await tx.select().from(departments).where(and(eq(departments.id, slot.departmentId), eq(departments.active, "YES"))).limit(1))[0];
+    if (!department) throw new Error("Le département sélectionné n’est plus disponible.");
+
+    const interventionTypeRows = await tx
+      .select()
+      .from(interventionTypes)
+      .where(
+        and(
+          eq(interventionTypes.id, input.interventionTypeId),
+          eq(interventionTypes.departmentId, slot.departmentId),
+          eq(interventionTypes.active, "YES"),
+        ),
+      )
+      .limit(1);
+
+    const selectedInterventionType = interventionTypeRows[0];
+
+    if (!selectedInterventionType) {
+      throw new Error(
+        "Le type d’intervention sélectionné n’est pas disponible pour ce département.",
+      );
+    }
+
+    const interventionType = selectedInterventionType.name;
+
     const locked = await tx
       .update(dateSlots)
       .set({ status: "PENDING_CONFIRMATION", updatedAt: new Date() })
@@ -263,10 +340,12 @@ export async function createInvitation(input: {
       ));
     if (resultRows(locked) !== 1) throw new SlotTakenError();
 
-    const submissionId = `GCV-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
+    const submissionId = `UFB-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
     const inserted = await tx.insert(invitationRequests).values({
       submissionId,
       dateSlotId: input.dateSlotId,
+      departmentId: slot.departmentId,
+      interventionTypeId: selectedInterventionType.id,
       federation: input.federation,
       church: input.church,
       contactName: input.contactName,
@@ -284,33 +363,42 @@ export async function createInvitation(input: {
     const releaseToken = await createToken(tx as DbLike, requestId, "RELEASE");
     const dateLabel = toFrenchDate(slot.date);
     const templates = configuredTemplates(configuration);
-    const values = { date: dateLabel, federation: input.federation, eglise: input.church, contact: input.contactName, email: input.email, telephone: input.phone, type: interventionType ?? "—", heure: desiredTime ?? "—", adresse: churchAddress ?? "—", message: message ?? "—", identifiant: submissionId, prenom: input.contactName.split(/\s+/)[0] || input.contactName, lien_agenda: publicBaseUrl() };
+    const values = { departement: department.name, date: dateLabel, federation: input.federation, eglise: input.church, contact: input.contactName, email: input.email, telephone: input.phone, type: interventionType ?? "—", heure: desiredTime ?? "—", adresse: churchAddress ?? "—", message: message ?? "—", identifiant: submissionId, prenom: input.contactName.split(/\s+/)[0] || input.contactName, lien_agenda: publicBaseUrl() };
     const requestSubject = renderSubject(templates.requestSubject, values);
     const requestBody = renderTemplate(templates.requestBody, values);
+    const recipients = await departmentNotificationRecipients(tx as DbLike, slot.departmentId);
+    const adminOutboxIds: number[] = [];
+    for (const recipient of shouldNotify ? recipients : []) {
     const adminMail = await tx.insert(emailOutbox).values({
       requestId,
-      recipient: ADMIN_EMAIL,
+      recipient,
       replyTo: ADMIN_EMAIL,
-      subject: requestSubject,
+      subject: `${department.code} — ${requestSubject}`.slice(0, 500),
       html: emailShell(
-        "Nouvelle demande d’invitation GCV",
-        `${requestBody}<p><a href="${actionHref(confirmToken)}" style="display:inline-block;background:#176b9b;color:#fff;text-decoration:none;padding:14px 18px;border-radius:8px;font-weight:700">CONFIRMER L’INVITATION</a></p><p><a href="${actionHref(releaseToken)}" style="display:inline-block;background:#a55f08;color:#fff;text-decoration:none;padding:14px 18px;border-radius:8px;font-weight:700">LIBÉRER / REFUSER</a></p>`,
+        "Nouvelle demande d’intervention UFB",
+        `<p><strong>Département : ${esc(department.name)}</strong></p>${requestBody}<p><a href="${actionHref(confirmToken)}" style="display:inline-block;background:#176b9b;color:#fff;text-decoration:none;padding:14px 18px;border-radius:8px;font-weight:700">CONFIRMER L’INVITATION</a></p><p><a href="${actionHref(releaseToken)}" style="display:inline-block;background:#a55f08;color:#fff;text-decoration:none;padding:14px 18px;border-radius:8px;font-weight:700">LIBÉRER / REFUSER</a></p>`,
       ),
       status: "PENDING",
     });
+    adminOutboxIds.push(insertId(adminMail));
+    }
     await recordAudit(tx as DbLike, "REQUEST_CREATED", "invitation_request", requestId, input.email, { submissionId, date: slot.date }, requestId);
-    return { requestId, submissionId, date: slot.date, church: input.church, adminOutboxId: insertId(adminMail) };
+    return { requestId, submissionId, date: slot.date, church: input.church, adminOutboxIds };
   });
-  if (input.notify !== false) await deliverOutbox(outcome.adminOutboxId ? [outcome.adminOutboxId] : undefined);
-  const { adminOutboxId, ...publicOutcome } = outcome;
-  return { ...publicOutcome, adminEmailStatus: input.notify === false ? "PENDING" as const : await outboxStatus(adminOutboxId) };
+  if (shouldNotify && outcome.adminOutboxIds.length) await deliverOutbox(outcome.adminOutboxIds);
+  const { adminOutboxIds, ...publicOutcome } = outcome;
+  const statuses = shouldNotify ? await Promise.all(adminOutboxIds.map(outboxStatus)) : [];
+  const adminEmailStatus = statuses.length && statuses.every((value) => value === "SENT")
+    ? "SENT" as const : statuses.includes("FAILED") ? "FAILED" as const : "PENDING" as const;
+  return { ...publicOutcome, adminEmailStatus };
 }
 
 async function requestWithSlot(db: DbLike, requestId: number): Promise<RequestWithSlot | null> {
   const rows = await db
-    .select({ request: invitationRequests, slot: dateSlots })
+    .select({ request: invitationRequests, slot: dateSlots, department: departments })
     .from(invitationRequests)
     .innerJoin(dateSlots, eq(invitationRequests.dateSlotId, dateSlots.id))
+    .leftJoin(departments, eq(invitationRequests.departmentId, departments.id))
     .where(eq(invitationRequests.id, requestId))
     .limit(1);
   return rows[0] ?? null;
@@ -318,6 +406,7 @@ async function requestWithSlot(db: DbLike, requestId: number): Promise<RequestWi
 
 function calendarInvitation(request: RequestWithSlot): GcvCalendarInvitation {
   return {
+    departmentName: request.department?.name,
     submissionId: request.request.submissionId,
     date: request.slot.date,
     federation: request.request.federation,
@@ -333,6 +422,7 @@ function calendarInvitation(request: RequestWithSlot): GcvCalendarInvitation {
 }
 
 async function syncConfirmedCalendarEvent(request: RequestWithSlot, actor: string) {
+  if (!process.env.GOOGLE_CALENDAR_ID?.trim()) return null;
   const db = await requireDb();
 
   try {
@@ -453,11 +543,15 @@ async function removeConfirmedCalendarEvent(request: RequestWithSlot, actor: str
 }
 
 async function queueDecisionEmail(request: RequestWithSlot, outcome: "CONFIRMED" | "REFUSED" | "CANCELLED" | "RESCHEDULED" | "UPDATED") {
+  if (process.env.UFB_EMAIL_NOTIFICATIONS_ENABLED !== "true") {
+    return "PENDING" as const;
+  }
   const db = await requireDb();
   const configuration = await getSettingsMap();
   const templates = configuredTemplates(configuration);
   const dateLabel = toFrenchDate(request.slot.date);
   const values = {
+    departement: request.department?.name ?? `Département #${request.request.departmentId}`,
     date: dateLabel,
     federation: request.request.federation,
     eglise: request.request.church,
@@ -501,12 +595,19 @@ export async function decideRequest(input: {
   actor: string;
   note?: string;
   notify?: boolean;
+  scope: AdminScope;
 }) {
   const db = await requireDb();
   const changed = await db.transaction(async (tx) => {
     const joined = await requestWithSlot(tx as DbLike, input.requestId);
     if (!joined || joined.request.status !== "PENDING" || joined.slot.status !== "PENDING_CONFIRMATION") {
       throw new Error("Cette demande n’est plus en attente de confirmation.");
+    }
+
+    assertDepartmentAccess(input.scope, joined.request.departmentId);
+
+    if (joined.slot.departmentId !== joined.request.departmentId) {
+      throw new Error("Le département de la demande ne correspond pas à celui de la date.");
     }
     const outcome = input.action === "CONFIRM" ? "CONFIRMED" : "REFUSED";
     const requestChanged = await tx
@@ -522,7 +623,7 @@ export async function decideRequest(input: {
     await recordAudit(tx as DbLike, input.action === "CONFIRM" ? "REQUEST_CONFIRMED" : "REQUEST_RELEASED", "invitation_request", input.requestId, input.actor, { date: joined.slot.date }, input.requestId);
     return { ...joined, request: { ...joined.request, status: outcome }, slot: { ...joined.slot, status: input.action === "CONFIRM" ? "CONFIRMED" : "AVAILABLE" } } as RequestWithSlot;
   });
-  if (input.action === "CONFIRM") {
+  if (input.action === "CONFIRM" && input.notify !== false) {
     await syncConfirmedCalendarEvent(changed, input.actor);
   }
   const emailStatus = input.notify === false ? "PENDING" as const : await queueDecisionEmail(changed, input.action === "CONFIRM" ? "CONFIRMED" : "REFUSED");
@@ -562,7 +663,7 @@ export async function decideFromActionToken(rawToken: string, notify = true) {
     return { confirmed: confirming, data: updated };
   });
   if (changed) {
-    if (changed.confirmed) {
+    if (changed.confirmed && notify) {
       await syncConfirmedCalendarEvent(changed.data, "email-action");
     }
     const emailStatus = notify ? await queueDecisionEmail(changed.data, changed.confirmed ? "CONFIRMED" : "REFUSED") : "PENDING" as const;
@@ -571,9 +672,15 @@ export async function decideFromActionToken(rawToken: string, notify = true) {
   return null;
 }
 
-export async function listRequests(input: { status?: string[]; search?: string; federation?: string; month?: string; year?: string }) {
+export async function listRequests(
+  input: { departmentId?: number; status?: string[]; search?: string; federation?: string; month?: string; year?: string },
+  scope: AdminScope,
+) {
   const db = await requireDb();
   const conditions: any[] = [];
+  const scopeCondition = departmentScopeCondition(scope, invitationRequests.departmentId);
+  if (scopeCondition) conditions.push(scopeCondition);
+  if (input.departmentId !== undefined) conditions.push(eq(invitationRequests.departmentId, input.departmentId));
   if (input.status?.length) conditions.push(inArray(invitationRequests.status, input.status as any));
   if (input.federation) conditions.push(eq(invitationRequests.federation, input.federation));
   if (input.year) conditions.push(like(dateSlots.date, `${input.year}-%`));
@@ -583,22 +690,30 @@ export async function listRequests(input: { status?: string[]; search?: string; 
     conditions.push(or(like(invitationRequests.church, term), like(invitationRequests.contactName, term), like(invitationRequests.email, term)));
   }
   return db
-    .select({ request: invitationRequests, slot: dateSlots })
+    .select({ request: invitationRequests, slot: dateSlots, department: departments })
     .from(invitationRequests)
     .innerJoin(dateSlots, eq(invitationRequests.dateSlotId, dateSlots.id))
+    .leftJoin(departments, eq(invitationRequests.departmentId, departments.id))
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(dateSlots.date), desc(invitationRequests.submittedAt));
 }
 
-export async function listCalendar(input?: { month?: string; status?: SlotStatus; federation?: string }) {
+export async function listCalendar(
+  input: { departmentId?: number; month?: string; status?: SlotStatus; federation?: string } | undefined,
+  scope: AdminScope,
+) {
   const db = await requireDb();
   const conditions: any[] = [];
+  const scopeCondition = departmentScopeCondition(scope, dateSlots.departmentId);
+  if (scopeCondition) conditions.push(scopeCondition);
+  if (input?.departmentId !== undefined) conditions.push(eq(dateSlots.departmentId, input.departmentId));
   if (input?.month) conditions.push(like(dateSlots.date, `${input.month}%`));
   if (input?.status) conditions.push(eq(dateSlots.status, input.status));
   const rows = await db
-    .select({ slot: dateSlots, request: invitationRequests })
+    .select({ slot: dateSlots, request: invitationRequests, department: departments })
     .from(dateSlots)
     .leftJoin(invitationRequests, and(eq(invitationRequests.dateSlotId, dateSlots.id), inArray(invitationRequests.status, ["PENDING", "CONFIRMED"])))
+    .leftJoin(departments, eq(dateSlots.departmentId, departments.id))
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(asc(dateSlots.date));
   return input?.federation
@@ -606,11 +721,33 @@ export async function listCalendar(input?: { month?: string; status?: SlotStatus
     : rows;
 }
 
-export async function dashboard() {
+export async function dashboard(scope: AdminScope) {
   const db = await requireDb();
-  const slots = await db.select().from(dateSlots).orderBy(asc(dateSlots.date));
-  const pending = await db.select().from(invitationRequests).where(eq(invitationRequests.status, "PENDING"));
-  const confirmed = await db.select().from(invitationRequests).where(eq(invitationRequests.status, "CONFIRMED"));
+
+  const slotScope = departmentScopeCondition(scope, dateSlots.departmentId);
+  const requestScope = departmentScopeCondition(scope, invitationRequests.departmentId);
+
+  const slots = await db
+    .select()
+    .from(dateSlots)
+    .where(slotScope)
+    .orderBy(asc(dateSlots.date));
+
+  const pendingConditions: any[] = [eq(invitationRequests.status, "PENDING")];
+  if (requestScope) pendingConditions.push(requestScope);
+
+  const confirmedConditions: any[] = [eq(invitationRequests.status, "CONFIRMED")];
+  if (requestScope) confirmedConditions.push(requestScope);
+
+  const pending = await db
+    .select()
+    .from(invitationRequests)
+    .where(and(...pendingConditions));
+
+  const confirmed = await db
+    .select()
+    .from(invitationRequests)
+    .where(and(...confirmedConditions));
   const now = today();
   const upcoming = confirmed.map((request) => ({ request, slot: slots.find((item) => item.id === request.dateSlotId) }))
     .filter((item): item is { request: typeof confirmed[number]; slot: typeof slots[number] } => Boolean(item.slot && item.slot.status === "CONFIRMED" && item.slot.date >= now))
@@ -639,37 +776,81 @@ export async function dashboard() {
   };
 }
 
-export async function listDepartments() {
+export async function listDepartments(scope: AdminScope) {
   const db = await requireDb();
+
+  const conditions: any[] = [
+    eq(departments.active, "YES"),
+  ];
+
+  const scopeCondition = departmentScopeCondition(scope, departments.id);
+  if (scopeCondition) conditions.push(scopeCondition);
 
   return db
     .select()
     .from(departments)
-    .where(eq(departments.active, "YES"))
+    .where(and(...conditions))
     .orderBy(asc(departments.name));
 }
 
-export async function listInterventionTypes(departmentId?: number) {
+export async function listInterventionTypes(
+  departmentId: number | undefined,
+  scope: AdminScope,
+  includeInactive = false,
+) {
   const db = await requireDb();
 
   if (departmentId) {
-    return db
-      .select()
-      .from(interventionTypes)
-      .where(
-        and(
-          eq(interventionTypes.departmentId, departmentId),
-          eq(interventionTypes.active, "YES"),
-        ),
-      )
-      .orderBy(asc(interventionTypes.name));
+    assertDepartmentAccess(scope, departmentId);
+  }
+
+  const conditions: any[] = [];
+  if (!includeInactive) conditions.push(eq(interventionTypes.active, "YES"));
+
+  const scopeCondition = departmentScopeCondition(
+    scope,
+    interventionTypes.departmentId,
+  );
+
+  if (scopeCondition) conditions.push(scopeCondition);
+
+  if (departmentId) {
+    conditions.push(
+      eq(interventionTypes.departmentId, departmentId),
+    );
   }
 
   return db
     .select()
     .from(interventionTypes)
-    .where(eq(interventionTypes.active, "YES"))
+    .where(and(...conditions))
     .orderBy(asc(interventionTypes.name));
+}
+
+export async function saveInterventionType(input: { id?: number; departmentId: number; name: string; active: "YES" | "NO" }, actor: string, scope: AdminScope) {
+  assertDepartmentAccess(scope, input.departmentId);
+  const name = input.name.trim();
+  if (!name || name.length > 80) throw new Error("Indiquez un nom de 1 à 80 caractères.");
+  const db = await requireDb();
+  try {
+    return await db.transaction(async (tx) => {
+      const department = (await tx.select({ id: departments.id }).from(departments).where(and(eq(departments.id, input.departmentId), eq(departments.active, "YES"))).limit(1))[0];
+      if (!department) throw new Error("Le département est introuvable ou inactif.");
+      let id = input.id;
+      if (id !== undefined) {
+        const result = await tx.update(interventionTypes).set({ name, active: input.active, updatedAt: new Date() }).where(and(eq(interventionTypes.id, id), eq(interventionTypes.departmentId, input.departmentId)));
+        if (resultRows(result) !== 1) throw new Error("Le type d’intervention est introuvable dans ce département.");
+      } else {
+        id = insertId(await tx.insert(interventionTypes).values({ departmentId: input.departmentId, name, active: input.active }));
+        if (!id) throw new Error("Le type d’intervention n’a pas pu être enregistré.");
+      }
+      await recordAudit(tx as DbLike, "INTERVENTION_TYPE_SAVED", "intervention_type", id, actor, { departmentId: input.departmentId, name, active: input.active });
+      return { id };
+    });
+  } catch (error) {
+    if ((error as { code?: string })?.code === "ER_DUP_ENTRY") throw new Error("Ce type d’intervention existe déjà dans ce département.");
+    throw error;
+  }
 }
 
 export async function createSlots(
@@ -677,9 +858,30 @@ export async function createSlots(
   departmentId: number,
   federation: string,
   actor: string,
+  scope: AdminScope,
   initialStatus: SlotStatus = "AVAILABLE",
-  interventionTypeId?: number | null,
 ) {
+  assertDepartmentAccess(scope, departmentId);
+
+  const db = await requireDb();
+
+  const department = (
+    await db
+      .select({ id: departments.id })
+      .from(departments)
+      .where(
+        and(
+          eq(departments.id, departmentId),
+          eq(departments.active, "YES"),
+        ),
+      )
+      .limit(1)
+  )[0];
+
+  if (!department) {
+    throw new Error("Le département sélectionné est introuvable ou inactif.");
+  }
+
   const configuration = await getSettingsMap();
   const federations: string[] = Array.isArray(configuration.federations)
     ? configuration.federations as string[]
@@ -689,7 +891,6 @@ export async function createSlots(
     throw new Error("Veuillez choisir une fédération disponible.");
   }
 
-  const db = await requireDb();
   let created = 0;
   let skipped = 0;
   for (const value of [...new Set(dates)].sort()) {
@@ -697,7 +898,6 @@ export async function createSlots(
       const inserted = await db.insert(dateSlots).values({
         date: value,
         departmentId,
-        interventionTypeId: interventionTypeId ?? null,
         federation,
         status: initialStatus,
       });
@@ -705,7 +905,6 @@ export async function createSlots(
       await recordAudit(db, "DATE_CREATED", "date_slot", id, actor, {
         date: value,
         departmentId,
-        interventionTypeId: interventionTypeId ?? null,
         federation,
         status: initialStatus,
       });
@@ -717,10 +916,18 @@ export async function createSlots(
   return { created, skipped };
 }
 
-export async function setSlotStatus(slotId: number, status: SlotStatus, actor: string, note?: string) {
+export async function setSlotStatus(
+  slotId: number,
+  status: SlotStatus,
+  actor: string,
+  scope: AdminScope,
+  note?: string,
+) {
   const db = await requireDb();
   const slot = (await db.select().from(dateSlots).where(eq(dateSlots.id, slotId)).limit(1))[0];
   if (!slot) throw new Error("Date introuvable.");
+
+  assertDepartmentAccess(scope, slot.departmentId);
   if (status !== "AVAILABLE" && status !== "UNAVAILABLE") throw new Error("Les statuts d’invitation sont gérés par les actions de réservation.");
   if (["PENDING_CONFIRMATION", "CONFIRMED"].includes(slot.status) && ["AVAILABLE", "UNAVAILABLE"].includes(status)) {
     throw new Error("Utilisez l’action sur la réservation pour libérer ou annuler cette date.");
@@ -732,7 +939,12 @@ export async function setSlotStatus(slotId: number, status: SlotStatus, actor: s
   return { ...slot, status };
 }
 
-export async function setSlotFederation(slotId: number, federation: string, actor: string) {
+export async function setSlotFederation(
+  slotId: number,
+  federation: string,
+  actor: string,
+  scope: AdminScope,
+) {
   const db = await requireDb();
 
   const configuration = await getSettingsMap();
@@ -746,6 +958,8 @@ export async function setSlotFederation(slotId: number, federation: string, acto
 
   const slot = (await db.select().from(dateSlots).where(eq(dateSlots.id, slotId)).limit(1))[0];
   if (!slot) throw new Error("Date introuvable.");
+
+  assertDepartmentAccess(scope, slot.departmentId);
 
   if (slot.status !== "AVAILABLE" && slot.status !== "UNAVAILABLE") {
     throw new Error("La fédération ne peut être modifiée que pour une date disponible ou bloquée.");
@@ -774,11 +988,17 @@ export async function setSlotFederation(slotId: number, federation: string, acto
   return { ...slot, federation };
 }
 
-export async function removeEmptySlot(slotId: number, actor: string) {
+export async function removeEmptySlot(
+  slotId: number,
+  actor: string,
+  scope: AdminScope,
+) {
   const db = await requireDb();
   await db.transaction(async (tx) => {
     const slot = (await tx.select().from(dateSlots).where(eq(dateSlots.id, slotId)).limit(1))[0];
     if (!slot) throw new Error("Date introuvable.");
+
+    assertDepartmentAccess(scope, slot.departmentId);
     if (slot.status === "PENDING_CONFIRMATION" || slot.status === "CONFIRMED") throw new Error("Une date associée à une invitation active ne peut pas être supprimée.");
     const relatedRequests = await tx.select({ id: invitationRequests.id }).from(invitationRequests)
       .where(eq(invitationRequests.dateSlotId, slotId));
@@ -802,6 +1022,7 @@ export async function updateInvitationDetails(input: {
   desiredTime?: string | null;
   churchAddress?: string | null;
   actor: string;
+  scope: AdminScope;
 }) {
   const configuration = await getSettingsMap();
   const federations: string[] = Array.isArray(configuration.federations) ? configuration.federations as string[] : [...FEDERATIONS];
@@ -810,6 +1031,13 @@ export async function updateInvitationDetails(input: {
   const updated = await db.transaction(async (tx) => {
     const current = await requestWithSlot(tx as DbLike, input.requestId);
     if (!current || !["PENDING", "CONFIRMED"].includes(current.request.status)) throw new Error("Seule une demande active peut être modifiée.");
+
+    assertDepartmentAccess(input.scope, current.request.departmentId);
+
+    if (current.slot.departmentId !== current.request.departmentId) {
+      throw new Error("Le département de la demande ne correspond pas à celui de la date.");
+    }
+
     const changed = await tx.update(invitationRequests).set({
       federation: input.federation.trim(), church: input.church.trim(), contactName: input.contactName.trim(),
       email: input.email.trim().toLowerCase(), phone: input.phone.trim(), interventionType: input.interventionType.trim(),
@@ -828,11 +1056,24 @@ export async function updateInvitationDetails(input: {
   return { ...updated, emailStatus };
 }
 
-export async function cancelInvitation(input: { requestId: number; disposition: "AVAILABLE" | "UNAVAILABLE"; actor: string; note?: string }) {
+export async function cancelInvitation(input: {
+  requestId: number;
+  disposition: "AVAILABLE" | "UNAVAILABLE";
+  actor: string;
+  note?: string;
+  scope: AdminScope;
+}) {
   const db = await requireDb();
   const changed = await db.transaction(async (tx) => {
     const joined = await requestWithSlot(tx as DbLike, input.requestId);
     if (!joined || joined.request.status !== "CONFIRMED") throw new Error("Seule une invitation confirmée peut être annulée.");
+
+    assertDepartmentAccess(input.scope, joined.request.departmentId);
+
+    if (joined.slot.departmentId !== joined.request.departmentId) {
+      throw new Error("Le département de la demande ne correspond pas à celui de la date.");
+    }
+
     const requestChanged = await tx.update(invitationRequests).set({ status: "CANCELLED", decisionAt: new Date(), decisionBy: input.actor, decisionNote: input.note ?? null })
       .where(and(eq(invitationRequests.id, input.requestId), eq(invitationRequests.status, "CONFIRMED")));
     if (resultRows(requestChanged) !== 1) throw new Error("Cette invitation vient d’être modifiée. Actualisez la liste.");
@@ -847,11 +1088,48 @@ export async function cancelInvitation(input: { requestId: number; disposition: 
   return changed;
 }
 
-export async function rescheduleInvitation(input: { requestId: number; newSlotId: number; oldDisposition: "AVAILABLE" | "UNAVAILABLE"; actor: string }) {
+export async function rescheduleInvitation(input: {
+  requestId: number;
+  newSlotId: number;
+  oldDisposition: "AVAILABLE" | "UNAVAILABLE";
+  actor: string;
+  scope: AdminScope;
+}) {
   const db = await requireDb();
   const changed = await db.transaction(async (tx) => {
     const current = await requestWithSlot(tx as DbLike, input.requestId);
     if (!current || current.request.status !== "CONFIRMED") throw new Error("Invitation introuvable ou non confirmée.");
+
+    assertDepartmentAccess(input.scope, current.request.departmentId);
+
+    if (current.slot.departmentId !== current.request.departmentId) {
+      throw new Error("Le département de la demande ne correspond pas à celui de la date actuelle.");
+    }
+
+    const newSlot = (
+      await tx
+        .select()
+        .from(dateSlots)
+        .where(eq(dateSlots.id, input.newSlotId))
+        .limit(1)
+    )[0];
+
+    if (!newSlot) {
+      throw new Error("La nouvelle date est introuvable.");
+    }
+
+    assertDepartmentAccess(input.scope, newSlot.departmentId);
+
+    if (newSlot.departmentId !== current.request.departmentId) {
+      throw new Error("Une invitation ne peut pas être déplacée vers un autre département.");
+    }
+
+    if (newSlot.date < today()) throw new Error("La nouvelle date doit être aujourd’hui ou dans le futur.");
+
+    if (newSlot.federation !== current.request.federation) {
+      throw new Error("Une invitation ne peut pas être déplacée vers une date réservée à une autre fédération.");
+    }
+
     const claimed = await tx.update(dateSlots).set({ status: "CONFIRMED", updatedAt: new Date() }).where(and(eq(dateSlots.id, input.newSlotId), eq(dateSlots.status, "AVAILABLE")));
     if (resultRows(claimed) !== 1) throw new SlotTakenError();
     const requestChanged = await tx.update(invitationRequests).set({ dateSlotId: input.newSlotId, decisionAt: new Date(), decisionBy: input.actor })
@@ -884,6 +1162,7 @@ export async function updateSetting(key: string, value: unknown, actor: string) 
     const incoming = value as Record<string, unknown>;
     const normalized: Record<string, { visible: boolean; required: boolean }> = {};
     for (const field of Object.keys(DEFAULT_FIELDS)) {
+      if (field === "interventionType") { normalized[field] = { visible: true, required: true }; continue; }
       const rule = incoming[field] as Record<string, unknown> | undefined;
       if (!rule || typeof rule.visible !== "boolean" || typeof rule.required !== "boolean" || (rule.required && !rule.visible)) throw new Error(`Le réglage du champ ${field} est invalide.`);
       normalized[field] = { visible: rule.visible, required: rule.required };
@@ -927,9 +1206,13 @@ export async function createPrivacyRequest(input: { email: string; requestType: 
   return { ok: true };
 }
 
-export async function exportInvitationRows(filters: { status?: string[]; federation?: string; month?: string; year?: string; search?: string }) {
-  const rows = await listRequests(filters);
-  return rows.map(({ request, slot }) => ({
+export async function exportInvitationRows(
+  filters: { departmentId?: number; status?: string[]; federation?: string; month?: string; year?: string; search?: string },
+  scope: AdminScope,
+) {
+  const rows = await listRequests(filters, scope);
+  return rows.map(({ request, slot, department }) => ({
+    "Département": department?.name ?? `Département #${request.departmentId}`,
     "Date": slot.date,
     "Statut date": slot.status,
     "Statut demande": request.status,
@@ -947,15 +1230,19 @@ export async function exportInvitationRows(filters: { status?: string[]; federat
 }
 
 export async function runReminders() {
+  if (process.env.UFB_EMAIL_NOTIFICATIONS_ENABLED !== "true") {
+    return { queued: 0, disabled: true };
+  }
   const settingValues = await getSettingsMap();
   const reminderSettings = settingValues.reminders as { enabled?: boolean; recipient?: string; includeRequester?: boolean };
   if (!reminderSettings?.enabled) return { queued: 0, disabled: true };
   const db = await requireDb();
   const templates = configuredTemplates(settingValues);
   const rows = await db
-    .select({ request: invitationRequests, slot: dateSlots })
+    .select({ request: invitationRequests, slot: dateSlots, department: departments })
     .from(invitationRequests)
     .innerJoin(dateSlots, eq(invitationRequests.dateSlotId, dateSlots.id))
+    .leftJoin(departments, eq(invitationRequests.departmentId, departments.id))
     .where(eq(invitationRequests.status, "CONFIRMED"));
   let queued = 0;
   const now = new Date();
@@ -965,10 +1252,11 @@ export async function runReminders() {
     const days = Math.round((targetUtc - todayUtc) / 86_400_000);
     const kind = days === 30 ? "D30" : days === 7 ? "D7" : days === 1 ? "D1" : null;
     if (!kind) continue;
-    const recipients = [reminderSettings.recipient || ADMIN_EMAIL];
+    const recipients = await departmentNotificationRecipients(db, row.request.departmentId);
     if (reminderSettings.includeRequester) recipients.push(row.request.email);
     const uniqueRecipients = [...new Set(recipients.map((recipient) => recipient.trim().toLowerCase()).filter(Boolean))];
     const values = {
+      departement: row.department?.name ?? `Département #${row.request.departmentId}`,
       date: toFrenchDate(row.slot.date),
       federation: row.request.federation,
       eglise: row.request.church,
@@ -1013,5 +1301,381 @@ export async function scheduledWorkStatus() {
 
 export async function listAdmins() {
   const db = await requireDb();
-  return db.select({ profile: adminProfiles, user: users }).from(adminProfiles).innerJoin(users, eq(adminProfiles.userId, users.id)).orderBy(asc(adminProfiles.email));
+
+  const admins = await db
+    .select({ profile: adminProfiles, user: users })
+    .from(adminProfiles)
+    .innerJoin(users, eq(adminProfiles.userId, users.id))
+    .orderBy(asc(adminProfiles.email));
+
+  const assignments = await db
+    .select({
+      adminProfileId: adminDepartments.adminProfileId,
+      departmentId: departments.id,
+      departmentCode: departments.code,
+      departmentName: departments.name,
+    })
+    .from(adminDepartments)
+    .innerJoin(
+      departments,
+      eq(adminDepartments.departmentId, departments.id),
+    )
+    .orderBy(asc(departments.name));
+
+  return admins.map((admin) => ({
+    ...admin,
+    allDepartments: admin.profile.role === "PRIMARY_ADMIN",
+    departments: assignments
+      .filter(
+        (assignment) =>
+          assignment.adminProfileId === admin.profile.id,
+      )
+      .map((assignment) => ({
+        id: assignment.departmentId,
+        code: assignment.departmentCode,
+        name: assignment.departmentName,
+      })),
+  }));
+}
+
+export async function createAdminAccount(input: {
+  name: string;
+  email: string;
+  password: string;
+  role: "PRIMARY_ADMIN" | "ADMIN" | "READ_ONLY";
+  departmentIds: number[];
+  actor: string;
+}) {
+  const db = await requireDb();
+
+  const name = input.name.trim();
+  const email = input.email.trim().toLowerCase();
+  const departmentIds = [...new Set(input.departmentIds)];
+
+  if (!name) throw new Error("Le nom est obligatoire.");
+  if (!email || !email.includes("@")) {
+    throw new Error("L’adresse e-mail est invalide.");
+  }
+  if (input.role !== "PRIMARY_ADMIN" && !departmentIds.length) {
+    throw new Error("Sélectionnez au moins un département.");
+  }
+
+  const passwordHash = await hashPassword(input.password);
+
+  return db.transaction(async (tx) => {
+    const existingProfile = await tx
+      .select({ id: adminProfiles.id })
+      .from(adminProfiles)
+      .where(eq(adminProfiles.email, email))
+      .limit(1);
+
+    if (existingProfile.length) {
+      throw new Error("Un compte administrateur existe déjà avec cette adresse e-mail.");
+    }
+
+    if (input.role !== "PRIMARY_ADMIN") {
+      const validDepartments = await tx
+        .select({ id: departments.id })
+        .from(departments)
+        .where(
+          and(
+            inArray(departments.id, departmentIds),
+            eq(departments.active, "YES"),
+          ),
+        );
+
+      if (validDepartments.length !== departmentIds.length) {
+        throw new Error("Un ou plusieurs départements sélectionnés sont invalides ou inactifs.");
+      }
+    }
+
+    const openId = `ufb-admin-${randomUUID()}`;
+
+    const userInsert = await tx.insert(users).values({
+      openId,
+      name,
+      email,
+      loginMethod: "password",
+      role: "admin",
+    });
+
+    const userId = insertId(userInsert);
+    if (!userId) {
+      throw new Error("Impossible de créer l’utilisateur.");
+    }
+
+    const profileInsert = await tx.insert(adminProfiles).values({
+      userId,
+      email,
+      role: input.role,
+      active: "YES",
+    });
+
+    const adminProfileId = insertId(profileInsert);
+    if (!adminProfileId) {
+      throw new Error("Impossible de créer le profil administrateur.");
+    }
+
+    await tx.insert(adminCredentials).values({
+      adminProfileId,
+      passwordHash,
+      failedAttempts: 0,
+      lockedUntil: null,
+    });
+
+    if (input.role !== "PRIMARY_ADMIN") {
+      await tx.insert(adminDepartments).values(
+        departmentIds.map((departmentId) => ({
+          adminProfileId,
+          departmentId,
+        })),
+      );
+    }
+
+    await recordAudit(
+      tx as DbLike,
+      "ADMIN_ACCOUNT_CREATED",
+      "admin",
+      adminProfileId,
+      input.actor,
+      {
+        email,
+        role: input.role,
+        departmentIds,
+      },
+    );
+
+    return {
+      id: adminProfileId,
+      userId,
+      name,
+      email,
+      role: input.role,
+      active: "YES" as const,
+      departmentIds,
+    };
+  });
+}
+
+export async function updateAdminAccount(input: {
+  adminProfileId: number;
+  name: string;
+  email: string;
+  role: "PRIMARY_ADMIN" | "ADMIN" | "READ_ONLY";
+  active: "YES" | "NO";
+  departmentIds: number[];
+  actor: string;
+}) {
+  const db = await requireDb();
+
+  const name = input.name.trim();
+  const email = input.email.trim().toLowerCase();
+  const departmentIds = [...new Set(input.departmentIds)];
+
+  if (!name) {
+    throw new Error("Le nom est obligatoire.");
+  }
+
+  if (!email || !email.includes("@")) {
+    throw new Error("Une adresse e-mail valide est obligatoire.");
+  }
+
+  if (input.role !== "PRIMARY_ADMIN" && !departmentIds.length) {
+    throw new Error("Sélectionnez au moins un département.");
+  }
+
+  return db.transaction(async (tx) => {
+    const existing = await tx
+      .select({
+        profileId: adminProfiles.id,
+        userId: adminProfiles.userId,
+        email: adminProfiles.email,
+        currentRole: adminProfiles.role,
+      })
+      .from(adminProfiles)
+      .where(eq(adminProfiles.id, input.adminProfileId))
+      .limit(1);
+
+    const account = existing[0];
+
+    if (!account) {
+      throw new Error("Compte administrateur introuvable.");
+    }
+
+    if (
+      account.currentRole === "PRIMARY_ADMIN" &&
+      (input.role !== "PRIMARY_ADMIN" || input.active !== "YES")
+    ) {
+      const activePrimaryAdmins = await tx
+        .select({ id: adminProfiles.id })
+        .from(adminProfiles)
+        .where(
+          and(
+            eq(adminProfiles.role, "PRIMARY_ADMIN"),
+            eq(adminProfiles.active, "YES"),
+          ),
+        );
+
+      const otherActivePrimaryAdmins = activePrimaryAdmins.filter(
+        (profile) => profile.id !== input.adminProfileId,
+      );
+
+      if (otherActivePrimaryAdmins.length === 0) {
+        throw new Error(
+          "Impossible de retirer ou désactiver le dernier administrateur général UFB actif.",
+        );
+      }
+    }
+
+    const emailOwner = await tx
+      .select({ id: adminProfiles.id })
+      .from(adminProfiles)
+      .where(eq(adminProfiles.email, email))
+      .limit(1);
+
+    if (emailOwner[0] && emailOwner[0].id !== input.adminProfileId) {
+      throw new Error(
+        "Cette adresse e-mail est déjà utilisée par un autre administrateur.",
+      );
+    }
+
+    if (input.role !== "PRIMARY_ADMIN") {
+      const validDepartments = await tx
+        .select({ id: departments.id })
+        .from(departments)
+        .where(
+          and(
+            inArray(departments.id, departmentIds),
+            eq(departments.active, "YES"),
+          ),
+        );
+
+      if (validDepartments.length !== departmentIds.length) {
+        throw new Error(
+          "Un ou plusieurs départements sélectionnés sont invalides ou inactifs.",
+        );
+      }
+    }
+
+    await tx
+      .update(users)
+      .set({
+        name,
+        email,
+        role: "admin",
+      })
+      .where(eq(users.id, account.userId));
+
+    await tx
+      .update(adminProfiles)
+      .set({
+        email,
+        role: input.role,
+        active: input.active,
+      })
+      .where(eq(adminProfiles.id, input.adminProfileId));
+
+    await tx
+      .delete(adminDepartments)
+      .where(eq(adminDepartments.adminProfileId, input.adminProfileId));
+
+    if (input.role !== "PRIMARY_ADMIN") {
+      await tx.insert(adminDepartments).values(
+        departmentIds.map((departmentId) => ({
+          adminProfileId: input.adminProfileId,
+          departmentId,
+        })),
+      );
+    }
+
+    await recordAudit(
+      tx as DbLike,
+      "ADMIN_ACCOUNT_UPDATED",
+      "admin",
+      input.adminProfileId,
+      input.actor,
+      {
+        previousEmail: account.email,
+        email,
+        role: input.role,
+        active: input.active,
+        departmentIds,
+      },
+    );
+
+    return {
+      id: input.adminProfileId,
+      userId: account.userId,
+      name,
+      email,
+      role: input.role,
+      active: input.active,
+      departmentIds,
+    };
+  });
+}
+
+export async function resetAdminPassword(input: {
+  adminProfileId: number;
+  newPassword: string;
+  actor: string;
+}) {
+  const db = await requireDb();
+
+  const passwordHash = await hashPassword(input.newPassword);
+
+  return db.transaction(async (tx) => {
+    const existing = await tx
+      .select({
+        profileId: adminProfiles.id,
+        email: adminProfiles.email,
+        role: adminProfiles.role,
+      })
+      .from(adminProfiles)
+      .where(eq(adminProfiles.id, input.adminProfileId))
+      .limit(1);
+
+    const account = existing[0];
+
+    if (!account) {
+      throw new Error("Compte administrateur introuvable.");
+    }
+
+    const updateResult = await tx
+      .update(adminCredentials)
+      .set({
+        passwordHash,
+        failedAttempts: 0,
+        lockedUntil: null,
+        passwordChangedAt: new Date(),
+      })
+      .where(
+        eq(
+          adminCredentials.adminProfileId,
+          input.adminProfileId,
+        ),
+      );
+
+    if (resultRows(updateResult) !== 1) {
+      throw new Error(
+        "Les identifiants de ce compte administrateur sont introuvables.",
+      );
+    }
+
+    await recordAudit(
+      tx as DbLike,
+      "ADMIN_PASSWORD_RESET",
+      "admin",
+      input.adminProfileId,
+      input.actor,
+      {
+        email: account.email,
+      },
+    );
+
+    return {
+      success: true as const,
+      adminProfileId: input.adminProfileId,
+    };
+  });
 }

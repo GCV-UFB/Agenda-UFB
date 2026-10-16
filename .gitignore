@@ -65,3 +65,14 @@ Thumbs.db
 
 # Webdev artifacts (checkpoint zips, migrations, etc.)
 .webdev/
+
+# Local deployment secrets and historical working copies
+.env
+.env.*
+!.env.example
+*.backup-*
+
+# Local files excluded from Agenda UFB deployment
+/artifacts/
+/backup_gcv_migrations/
+/tsc

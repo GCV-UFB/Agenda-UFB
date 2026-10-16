@@ -1,26 +1,69 @@
-# Déploiement gratuit indépendant de Manus
+# Agenda UFB — Déploiement pilote gratuit
 
-Architecture retenue :
-- Application/API : Render Web Service (Free)
-- Base MySQL compatible : TiDB Cloud Starter (quota gratuit, limite de dépense à 0)
-- E-mail : Microsoft Graph avec la boîte gcv.ufb@adventiste.org
+## Projet indépendant
 
-Variables serveur requises :
-- DATABASE_URL : URL MySQL/TLS TiDB
-- JWT_SECRET : chaîne aléatoire longue (32+ octets)
-- ADMIN_PASSWORD : mot de passe administrateur fort (12+ caractères)
-- APP_ID : gcv-ufb-agenda
-- PUBLIC_APP_URL : https://<service>.onrender.com
-- PUBLIC_API_URL : identique à PUBLIC_APP_URL
-- MS_GRAPH_CLIENT_ID
-- MS_GRAPH_TENANT_ID
-- MS_GRAPH_CLIENT_SECRET
-- MS_TOKEN_ENCRYPTION_KEY : clé aléatoire pour chiffrer le refresh token Microsoft
+- Dépôt GitHub : https://github.com/GCV-UFB/Agenda-UFB
+- Branche : main
+- Service Render : nouveau service Web, indépendant de la GCV.
+- Base de données : base dédiée `agenda_ufb`.
 
-Déploiement : le Dockerfile construit l'export Web et l'API dans un seul service HTTPS. Le serveur sert le SPA et /api sur la même origine.
+L'application Agenda GCV existante, son dépôt GitHub,
+son service Render et sa base de données ne doivent
+jamais être modifiés par ce déploiement.
 
-Base : appliquer les migrations Drizzle existantes à DATABASE_URL avec `pnpm db:push` avant le premier usage.
+## Configuration du pilote
 
-Microsoft Entra : enregistrer exactement `https://<service>.onrender.com/api/microsoft/callback` comme Redirect URI Web.
+Créer un nouveau service Web sur Render en utilisant
+le dépôt Agenda-UFB.
 
-Important : conserver le spending limit TiDB à 0 pour empêcher toute facturation au-delà du quota gratuit. Render Free peut se mettre en veille après inactivité; le premier accès après veille peut donc être plus lent.
+Choisir une formule gratuite si elle est disponible.
+Ne sélectionner aucune formule payante sans autorisation.
+
+Utiliser le Dockerfile du projet.
+
+Configurer les variables d'environnement nécessaires
+dans Render, sans publier leurs valeurs dans GitHub.
+
+Variables principales :
+
+- DATABASE_URL : connexion à la base UFB dédiée.
+- JWT_SECRET : secret propre à Agenda UFB.
+- UFB_EMAIL_NOTIFICATIONS_ENABLED=false
+
+Ne pas configurer Gmail pour le pilote.
+
+Les notifications par e-mail doivent rester désactivées
+pendant toute la démonstration.
+
+## Sécurité
+
+Ne jamais publier :
+
+- .env.local
+- mots de passe
+- secrets JWT
+- identifiants de base de données
+- jetons Google
+
+Ne pas exécuter de migrations sur la base GCV.
+Ne pas utiliser db:push pendant cette publication.
+
+## Vérification
+
+Avant publication :
+
+1. Vérifier les fichiers suivis par Git.
+2. Vérifier l'absence de secrets dans les modifications.
+3. Confirmer le dépôt GitHub Agenda-UFB.
+4. Vérifier les paramètres du nouveau service Render.
+
+Après publication :
+
+1. Ouvrir l'adresse HTTPS publique.
+2. Vérifier la page d'accueil.
+3. Tester les demandes avec des données fictives.
+4. Vérifier les accès administratifs.
+5. Confirmer qu'aucun e-mail n'est envoyé.
+
+L'activation future des notifications nécessite
+une validation administrative distincte.

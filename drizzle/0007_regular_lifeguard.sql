@@ -1,1 +1,0 @@
-ALTER TABLE `invitation_requests` ADD `googleCalendarEventId` varchar(255);

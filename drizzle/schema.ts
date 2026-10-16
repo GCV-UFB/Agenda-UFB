@@ -37,6 +37,24 @@ export const departments = mysqlTable(
   ],
 );
 
+export const adminDepartments = mysqlTable(
+  "admin_departments",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    adminProfileId: int("adminProfileId").notNull(),
+    departmentId: int("departmentId").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("admin_departments_admin_department_unique").on(
+      table.adminProfileId,
+      table.departmentId,
+    ),
+    index("admin_departments_admin_idx").on(table.adminProfileId),
+    index("admin_departments_department_idx").on(table.departmentId),
+  ],
+);
+
 export const interventionTypes = mysqlTable(
   "intervention_types",
   {
@@ -64,7 +82,6 @@ export const dateSlots = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     departmentId: int("departmentId").notNull(),
-    interventionTypeId: int("interventionTypeId"),
     date: date("date", { mode: "string" }).notNull(),
     federation: varchar("federation", { length: 80 }).notNull(),
     status: mysqlEnum("status", [
@@ -80,11 +97,10 @@ export const dateSlots = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => [
-    uniqueIndex("date_slots_department_federation_date_type_unique").on(
+    uniqueIndex("date_slots_department_federation_date_unique").on(
       table.departmentId,
       table.federation,
       table.date,
-      table.interventionTypeId,
     ),
     index("date_slots_status_date_idx").on(table.status, table.date),
     index("date_slots_department_status_date_idx").on(
@@ -107,6 +123,8 @@ export const invitationRequests = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     submissionId: varchar("submissionId", { length: 64 }).notNull().unique(),
     dateSlotId: int("dateSlotId").notNull(),
+    departmentId: int("departmentId").notNull(),
+    interventionTypeId: int("interventionTypeId"),
     federation: varchar("federation", { length: 80 }).notNull(),
     church: varchar("church", { length: 180 }).notNull(),
     contactName: varchar("contactName", { length: 180 }).notNull(),
@@ -136,6 +154,8 @@ export const invitationRequests = mysqlTable(
   },
   (table) => [
     index("invitation_requests_date_idx").on(table.dateSlotId),
+    index("invitation_requests_department_idx").on(table.departmentId),
+    index("invitation_requests_intervention_type_idx").on(table.interventionTypeId),
     index("invitation_requests_status_idx").on(table.status, table.submittedAt),
     index("invitation_requests_federation_idx").on(table.federation),
     index("invitation_requests_church_idx").on(table.church),
@@ -156,6 +176,23 @@ export const adminProfiles = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => [index("admin_profiles_active_idx").on(table.active)],
+);
+
+export const adminCredentials = mysqlTable(
+  "admin_credentials",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    adminProfileId: int("adminProfileId").notNull().unique(),
+    passwordHash: varchar("passwordHash", { length: 512 }).notNull(),
+    failedAttempts: int("failedAttempts").default(0).notNull(),
+    lockedUntil: timestamp("lockedUntil"),
+    passwordChangedAt: timestamp("passwordChangedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => [
+    index("admin_credentials_locked_idx").on(table.lockedUntil),
+  ],
 );
 
 export const auditLog = mysqlTable(

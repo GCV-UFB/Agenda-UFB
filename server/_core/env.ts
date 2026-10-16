@@ -1,5 +1,11 @@
+import dotenv from "dotenv";
+
+if (process.env.NODE_ENV !== "production") {
+  dotenv.config({ path: ".env.local", override: false });
+}
+
 export const ENV = {
-  appId: process.env.APP_ID ?? process.env.MANUS_PROJECT_ID ?? process.env.VITE_APP_ID ?? "gcv-ufb-agenda",
+  appId: process.env.APP_ID ?? process.env.MANUS_PROJECT_ID ?? process.env.VITE_APP_ID ?? "agenda-ufb-pilot",
   cookieSecret: process.env.MANUS_JWT_SECRET ?? process.env.JWT_SECRET ?? "",
   databaseUrl: process.env.DATABASE_URL ?? "",
   oAuthServerUrl: process.env.MANUS_OAUTH_API_URL ?? process.env.OAUTH_SERVER_URL ?? "",

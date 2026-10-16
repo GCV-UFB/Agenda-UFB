@@ -128,6 +128,7 @@ export async function googleTokenStatus() {
 
   const rows = await db
     .select({
+      refreshTokenEncrypted: googleMailConnections.refreshTokenEncrypted,
       mailboxEmail: googleMailConnections.mailboxEmail,
       connectedAt: googleMailConnections.connectedAt,
       updatedAt: googleMailConnections.updatedAt,
@@ -138,8 +139,12 @@ export async function googleTokenStatus() {
 
   const row = rows[0];
 
+  let usable = false;
+  if (row) {
+    try { usable = Boolean(decryptToken(row.refreshTokenEncrypted)); } catch { usable = false; }
+  }
   return {
-    configured: Boolean(row),
+    configured: usable,
     mailboxEmail: row?.mailboxEmail ?? null,
     connectedAt: row?.connectedAt ?? null,
     updatedAt: row?.updatedAt ?? null,

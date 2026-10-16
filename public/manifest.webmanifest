@@ -1,7 +1,7 @@
 {
-  "name": "GCV-UFB — Agenda des invitations de prédication",
-  "short_name": "GCV-UFB Agenda",
-  "description": "Agenda des invitations de prédication de la Gestion Chrétienne de la Vie — Union Franco-Belge.",
+  "name": "Agenda UFB — Invitations et interventions",
+  "short_name": "Agenda UFB",
+  "description": "Demandes d’intervention auprès des départements de l’Union Franco-Belge.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -19,5 +19,6 @@
       "sizes": "512x512",
       "type": "image/png"
     }
-  ]
+  ],
+  "id": "/agenda-ufb"
 }

@@ -37,6 +37,7 @@ async function calendarClient() {
 }
 
 export type GcvCalendarInvitation = {
+  departmentName?: string;
   submissionId: string;
   date: string;
   federation: string;
@@ -63,6 +64,7 @@ function nextIsoDate(date: string) {
 
 function eventResource(input: GcvCalendarInvitation) {
   const description = [
+    `Département : ${input.departmentName || "UFB"}`,
     `Fédération : ${input.federation}`,
     `Église : ${input.church}`,
     `Type d'intervention : ${input.interventionType || "—"}`,
@@ -77,7 +79,7 @@ function eventResource(input: GcvCalendarInvitation) {
     .join("\n");
 
   return {
-    summary: `Prédication GCV — ${input.church}`,
+    summary: `${input.departmentName || "Intervention UFB"} — ${input.church}`,
     description,
     location: input.churchAddress || undefined,
     start: {

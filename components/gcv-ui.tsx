@@ -13,7 +13,7 @@ export const GCV = {
 };
 
 export function BrandMark({ compact = false }: { compact?: boolean }) {
-  return <Image accessibilityLabel="Icône calendrier GCV-UFB" source={require("../assets/images/icon.png")} resizeMode="cover" style={[styles.brandMark, compact && styles.brandMarkCompact]} />;
+  return <Image accessibilityLabel="Logo officiel de l’Union Franco-Belge" source={require("../assets/images/ufb-logo.png")} resizeMode="contain" style={[styles.brandMark, compact && styles.brandMarkCompact]} />;
 }
 
 export function PrimaryButton({ label, onPress, disabled, tone = "primary", icon }: { label: string; onPress: () => void; disabled?: boolean; tone?: "primary" | "secondary" | "danger" | "warning"; icon?: keyof typeof Ionicons.glyphMap }) {
@@ -25,8 +25,8 @@ export function SectionCard({ children, style }: { children: React.ReactNode; st
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
-export function Field({ label, value, onChangeText, placeholder, multiline = false, keyboardType, autoCapitalize = "sentences" }: { label: string; value: string; onChangeText: (value: string) => void; placeholder?: string; multiline?: boolean; keyboardType?: TextInputProps["keyboardType"]; autoCapitalize?: TextInputProps["autoCapitalize"] }) {
-  return <View style={styles.fieldWrap}><Text style={styles.fieldLabel}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor="#91A1AF" multiline={multiline} keyboardType={keyboardType} autoCapitalize={autoCapitalize} style={[styles.input, multiline && styles.multiline]} /></View>;
+export function Field({ label, value, onChangeText, placeholder, multiline = false, keyboardType, autoCapitalize = "sentences", secureTextEntry = false }: { label: string; value: string; onChangeText: (value: string) => void; placeholder?: string; multiline?: boolean; keyboardType?: TextInputProps["keyboardType"]; autoCapitalize?: TextInputProps["autoCapitalize"]; secureTextEntry?: boolean }) {
+  return <View style={styles.fieldWrap}><Text style={styles.fieldLabel}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChangeText} placeholder={placeholder} placeholderTextColor="#91A1AF" multiline={multiline} keyboardType={keyboardType} autoCapitalize={autoCapitalize} secureTextEntry={secureTextEntry} style={[styles.input, multiline && styles.multiline]} /></View>;
 }
 
 export function StatusPill({ status }: { status: SlotStatus }) {
@@ -43,8 +43,8 @@ export function EmptyState({ title, detail }: { title: string; detail: string })
 }
 
 const styles = StyleSheet.create({
-  brandMark: { width: 52, height: 52, borderRadius: 15, backgroundColor: GCV.navy, overflow: "hidden" },
-  brandMarkCompact: { width: 36, height: 36, borderRadius: 11 },
+  brandMark: { width: 110, height: 40 },
+  brandMarkCompact: { width: 120, height: 44 },
   button: { minHeight: 48, paddingHorizontal: 16, justifyContent: "center", borderRadius: 10 },
   buttonContent: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
   buttonText: { fontSize: 14, fontWeight: "800", letterSpacing: 0.2, textAlign: "center" },

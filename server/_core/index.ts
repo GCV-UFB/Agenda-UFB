@@ -1,4 +1,9 @@
 import "dotenv/config";
+import dotenv from "dotenv";
+
+if (process.env.NODE_ENV !== "production") {
+  dotenv.config({ path: ".env.local", override: false });
+}
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -10,7 +15,6 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { createCorsMiddleware } from "./cors";
-import { clearLegacySessionCookie } from "./cookies";
 import { registerActionRoutes } from "../routes/actions";
 import { registerGoogleOAuthRoutes } from "../routes/google-oauth";
 import { registerScheduledRoutes } from "../routes/scheduled";
@@ -19,7 +23,6 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
   app.use(createCorsMiddleware());
-  app.use(clearLegacySessionCookie());
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ limit: "2mb", extended: true }));
   registerStorageProxy(app);
@@ -29,7 +32,7 @@ async function startServer() {
   registerScheduledRoutes(app);
     app.get("/api/health", (_req, res) => {
     res.setHeader("Cache-Control", "private, no-store");
-    res.json({ ok: true, service: "gcv-ufb-agenda", timestamp: Date.now() });
+    res.json({ ok: true, service: "agenda-ufb-pilot", timestamp: Date.now() });
   });
   app.use("/api/trpc", (_req, res, next) => {
     res.setHeader("Cache-Control", "private, no-store");
@@ -46,7 +49,7 @@ async function startServer() {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const webDir = path.resolve(here, "web");
   if (fs.existsSync(webDir)) {
-    app.use(express.static(webDir, { index: false, maxAge: "1h" }));
+    app.use(express.static(webDir, { index: false, extensions: ["html"], maxAge: "1h", setHeaders: (res, file) => { if (/\.(html|json|webmanifest)$/.test(file) || file.endsWith("service-worker.js")) res.setHeader("Cache-Control", "no-cache"); } }));
     app.get("*", (_req, res) => {
       res.setHeader("Cache-Control", "no-cache");
       res.sendFile(path.join(webDir, "index.html"));

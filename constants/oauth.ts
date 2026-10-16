@@ -4,7 +4,7 @@ import * as ReactNative from "react-native";
 
 // Extract scheme from bundle ID (last segment timestamp, prefixed with "manus")
 // e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const bundleId = "space.manus.gcvagenda.t040120187494442";
+const bundleId = "org.adventiste.ufb.agenda.t20261015";
 const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
 const schemeFromBundleId = `manus${timestamp}`;
 
@@ -36,8 +36,8 @@ export function getApiBaseUrl(): string {
   // Keep published Web requests same-origin. Only the numbered sandbox Preview host
   // should point at the separate 3000 endpoint, and native builds use their configured URL.
   if (ReactNative.Platform.OS === "web" && typeof window !== "undefined" && window.location) {
-    const { protocol, hostname } = window.location;
-    if (hostname === "localhost" || hostname === "127.0.0.1") {
+    const { protocol, hostname, port } = window.location;
+    if ((hostname === "localhost" || hostname === "127.0.0.1") && port === "8081") {
       return `${protocol}//${hostname}:3000`;
     }
     if (/^\d+-[a-z0-9-]+(?:\.[a-z0-9]+)?\.manus\.computer$/i.test(hostname)) {
@@ -53,8 +53,8 @@ export function getApiBaseUrl(): string {
   return API_BASE_URL.replace(/\/$/, "");
 }
 
-export const SESSION_TOKEN_KEY = "app_session_token";
-export const USER_INFO_KEY = "manus-runtime-user-info";
+export const SESSION_TOKEN_KEY = "ufb-session-token";
+export const USER_INFO_KEY = "ufb-user-info";
 
 const encodeState = (value: string) => {
   if (typeof globalThis.btoa === "function") {

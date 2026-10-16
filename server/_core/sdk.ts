@@ -31,12 +31,7 @@ const GET_USER_INFO_WITH_JWT_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserI
 
 class OAuthService {
   constructor(private client: ReturnType<typeof axios.create>) {
-    console.log("[OAuth] Client initialized");
-    if (!ENV.oAuthServerUrl) {
-      console.error(
-        "[OAuth] ERROR: OAUTH_SERVER_URL is not configured! Set OAUTH_SERVER_URL environment variable.",
-      );
-    }
+    if (ENV.oAuthServerUrl) console.log("[OAuth] Legacy provider configured");
   }
 
   private decodeState(state: string): string {
@@ -130,6 +125,7 @@ class SDKServer {
 
   private getSessionSecret() {
     const secret = ENV.cookieSecret;
+    if (secret.length < 32) throw new Error("JWT_SECRET doit contenir au moins 32 caractères.");
     return new TextEncoder().encode(secret);
   }
 
@@ -186,7 +182,7 @@ class SDKServer {
       });
       const { openId, appId, name } = payload as Record<string, unknown>;
 
-      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || !isNonEmptyString(name)) {
+      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || appId !== ENV.appId || typeof name !== "string") {
         console.warn("[Auth] Session payload missing required fields");
         return null;
       }
@@ -254,7 +250,7 @@ class SDKServer {
 
     // Production deployment uses a local administrator session created by /api/auth/login.
     // Legacy Manus sessions may still sync through the old provider when configured.
-    if (!user && session.openId !== "gcv-primary-admin") {
+    if (!user && session.openId !== "ufb-primary-admin") {
       try {
         const userInfo = await this.getUserInfoWithJwt(sessionCookie ?? "");
         await db.upsertUser({

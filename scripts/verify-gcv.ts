@@ -1,5 +1,5 @@
 import { and, eq, inArray, or } from "drizzle-orm";
-import { actionTokens, auditLog, dateSlots, emailOutbox, invitationRequests, reminderLog } from "../drizzle/schema";
+import { actionTokens, auditLog, dateSlots, departments, interventionTypes, emailOutbox, invitationRequests, reminderLog } from "../drizzle/schema";
 import { getDb } from "../server/db";
 import { ADMIN_EMAIL } from "../shared/gcv";
 import { claimEmailOutboxMessage } from "../server/services/email";
@@ -31,6 +31,12 @@ async function availableFixtureDates(db: NonNullable<Awaited<ReturnType<typeof g
 }
 
 async function main() {
+  // Never create fixtures in a user's configured pilot or production database.
+  const testUrl = process.env.UFB_TEST_DATABASE_URL;
+  if (!testUrl || testUrl === process.env.DATABASE_URL || !/(?:^|[_-])(test|verification)(?:[_-]|$)/i.test(new URL(testUrl).pathname.slice(1))) {
+    throw new Error("Configurez UFB_TEST_DATABASE_URL vers une base de test distincte (nom contenant test ou verification). Aucun accès en écriture n’a été effectué.");
+  }
+  process.env.DATABASE_URL = testUrl;
   const db = await getDb();
   if (!db) throw new Error("DATABASE_URL indisponible");
   const dates = await availableFixtureDates(db);
@@ -43,11 +49,23 @@ async function main() {
   const slotIds: number[] = [];
   const requestIds: number[] = [];
   let outboxClaimId: number | null = null;
+  let fixtureDepartmentId = 0;
+  let fixtureInterventionTypeId = 0;
+
+  const verificationAdminScope = {
+    role: "PRIMARY_ADMIN" as const,
+    allDepartments: true,
+    departmentIds: [],
+    canWrite: true,
+  };
+
   try {
+    fixtureDepartmentId = insertId(await db.insert(departments).values({ code: `TEST_${Date.now()}`, name: "Département de vérification temporaire", active: "YES" }));
+    fixtureInterventionTypeId = insertId(await db.insert(interventionTypes).values({ departmentId: fixtureDepartmentId, name: "Intervention de test", active: "YES" }));
     for (const date of dates) {
       const inserted = await db.insert(dateSlots).values({
         date,
-        departmentId: 1,
+        departmentId: fixtureDepartmentId,
         federation: "FFN",
         status: "AVAILABLE",
       });
@@ -64,7 +82,7 @@ async function main() {
       const outcome = await createInvitation({
         dateSlotId, federation: "FFN", church: `Église de test ${suffix}`,
         contactName: `Contact Test ${suffix}`, email: `test-${suffix}@example.invalid`,
-        phone: "+33600000000", interventionType: "Prédication", consent: true, notify: false,
+        phone: "+33600000000", interventionTypeId: fixtureInterventionTypeId, consent: true, notify: false,
       });
       requestIds.push(outcome.requestId);
       return outcome;
@@ -76,13 +94,13 @@ async function main() {
     assert(!(await publicHas(slotIds[0])), "TEST 1: pending slot remains public");
 
     // Test 2: a confirmation remains blocked and creates a consistent request/slot state.
-    await decideRequest({ requestId: first.requestId, action: "CONFIRM", actor: "verification-script", notify: false });
+    await decideRequest({ requestId: first.requestId, action: "CONFIRM", actor: "verification-script", notify: false, scope: verificationAdminScope });
     assert((await readSlot(slotIds[0]))?.status === "CONFIRMED", "TEST 2: confirm did not confirm the slot");
     assert(!(await publicHas(slotIds[0])), "TEST 2: confirmed slot remains public");
 
     // Test 3: release returns the date to the public list.
     const released = await invite(slotIds[1], "release");
-    await decideRequest({ requestId: released.requestId, action: "RELEASE", actor: "verification-script", notify: false });
+    await decideRequest({ requestId: released.requestId, action: "RELEASE", actor: "verification-script", notify: false, scope: verificationAdminScope });
     assert((await readSlot(slotIds[1]))?.status === "AVAILABLE", "TEST 3: release did not restore availability");
     assert(await publicHas(slotIds[1]), "TEST 3: released slot did not return to the public list");
 
@@ -92,8 +110,8 @@ async function main() {
     assert(accepted.length === 1, `TEST 4: expected one accepted reservation, received ${accepted.length}`);
     const requestId = accepted[0].value.requestId;
     const decisions = await Promise.allSettled([
-      decideRequest({ requestId, action: "CONFIRM", actor: "verification-script", notify: false }),
-      decideRequest({ requestId, action: "RELEASE", actor: "verification-script", notify: false }),
+      decideRequest({ requestId, action: "CONFIRM", actor: "verification-script", notify: false, scope: verificationAdminScope }),
+      decideRequest({ requestId, action: "RELEASE", actor: "verification-script", notify: false, scope: verificationAdminScope }),
     ]);
     assert(decisions.filter((item) => item.status === "fulfilled").length === 1, "TEST 4: exactly one competing decision must succeed");
     const decided = (await db.select().from(invitationRequests).where(eq(invitationRequests.id, requestId)).limit(1))[0];
@@ -101,9 +119,19 @@ async function main() {
     assert((decided?.status === "CONFIRMED" && decidedSlot?.status === "CONFIRMED") || (decided?.status === "REFUSED" && decidedSlot?.status === "AVAILABLE"), "TEST 4: request and slot ended in contradictory states");
 
     // Tests 5 and 6: manual blocking hides a slot, then releasing it restores visibility.
-    await setSlotStatus(slotIds[3], "UNAVAILABLE", "verification-script");
+    await setSlotStatus(
+      slotIds[3],
+      "UNAVAILABLE",
+      "verification-script",
+      verificationAdminScope,
+    );
     assert(!(await publicHas(slotIds[3])), "TEST 5: blocked slot remains public");
-    await setSlotStatus(slotIds[3], "AVAILABLE", "verification-script");
+    await setSlotStatus(
+      slotIds[3],
+      "AVAILABLE",
+      "verification-script",
+      verificationAdminScope,
+    );
     assert(await publicHas(slotIds[3]), "TEST 6: released slot did not return to public visibility");
 
     // Competing one-use email action links must also produce only one valid decision.
@@ -146,6 +174,8 @@ async function main() {
       await db.delete(auditLog).where(and(eq(auditLog.entityType, "date_slot"), inArray(auditLog.entityId, slotIds.map(String))));
       await db.delete(dateSlots).where(inArray(dateSlots.id, slotIds));
     }
+    if (fixtureInterventionTypeId) await db.delete(interventionTypes).where(eq(interventionTypes.id, fixtureInterventionTypeId));
+    if (fixtureDepartmentId) await db.delete(departments).where(eq(departments.id, fixtureDepartmentId));
   }
 }
 

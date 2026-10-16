@@ -2,21 +2,26 @@ import { z } from "zod";
 import * as XLSX from "xlsx";
 import { getSessionCookieName, getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { adminProcedure, adminWriteProcedure, publicProcedure, router } from "./_core/trpc";
+import { adminProcedure, adminWriteProcedure, primaryAdminProcedure, primaryAdminWriteProcedure, publicProcedure, router } from "./_core/trpc";
 import {
   SlotTakenError,
   cancelInvitation,
   createInvitation,
+  createAdminAccount,
   createPrivacyRequest,
+  resetAdminPassword,
+  updateAdminAccount,
   createSlots,
   dashboard,
   decideRequest,
   exportInvitationRows,
   listAdmins,
   listAudit,
+  formOptions,
   listCalendar,
   listDepartments,
   listInterventionTypes,
+  saveInterventionType,
   listPublicBootstrap,
   listRequests,
   removeEmptySlot,
@@ -47,7 +52,7 @@ const invitationInput = z.object({
   contactName: z.string().trim().min(2).max(180),
   email: z.string().trim().email().max(320),
   phone: z.string().trim().min(5).max(80),
-  interventionType: z.string().trim().max(80).optional().nullable(),
+  interventionTypeId: z.number().int().positive(),
   message: z.string().max(3000).optional().nullable(),
   desiredTime: z.string().max(40).optional().nullable(),
   churchAddress: z.string().max(500).optional().nullable(),
@@ -66,7 +71,7 @@ export const appRouter = router({
   }),
   public: router({
     bootstrap: publicProcedure.query(() => listPublicBootstrap()),
-    submitRequest: publicProcedure.input(invitationInput).mutation(async ({ input }) => {
+    submitRequest: publicProcedure.input(invitationInput).mutation(async ({ input, ctx }) => {
       try {
         return await createInvitation(input);
       } catch (error) {
@@ -79,27 +84,33 @@ export const appRouter = router({
       .mutation(({ input }) => createPrivacyRequest(input)),
   }),
   admin: router({
-    dashboard: adminProcedure.query(() => dashboard()),
+    dashboard: adminProcedure.query(({ ctx }) => dashboard(ctx.adminScope)),
     requests: adminProcedure
-      .input(z.object({ status: z.array(requestStatus).optional(), search: z.string().max(120).optional(), federation: z.string().max(80).optional(), month: z.string().regex(/^\d{4}-\d{2}$/).optional(), year: z.string().regex(/^\d{4}$/).optional() }).optional())
-      .query(({ input }) => listRequests(input ?? {})),
+      .input(z.object({ departmentId: z.number().int().positive().optional(), status: z.array(requestStatus).optional(), search: z.string().max(120).optional(), federation: z.string().max(80).optional(), month: z.string().regex(/^\d{4}-\d{2}$/).optional(), year: z.string().regex(/^\d{4}$/).optional() }).optional())
+      .query(({ input, ctx }) => listRequests(input ?? {}, ctx.adminScope)),
     calendar: adminProcedure
-      .input(z.object({ month: z.string().regex(/^\d{4}-\d{2}$/).optional(), status: slotStatus.optional(), federation: z.string().max(80).optional() }).optional())
-      .query(({ input }) => listCalendar(input)),
+      .input(z.object({ departmentId: z.number().int().positive().optional(), month: z.string().regex(/^\d{4}-\d{2}$/).optional(), status: slotStatus.optional(), federation: z.string().max(80).optional() }).optional())
+      .query(({ input, ctx }) => listCalendar(input, ctx.adminScope)),
+    formOptions: adminProcedure.query(() => formOptions()),
     departments: adminProcedure
-      .query(() => listDepartments()),
+      .query(({ ctx }) => listDepartments(ctx.adminScope)),
     interventionTypes: adminProcedure
       .input(
         z.object({
           departmentId: z.number().int().positive().optional(),
+          includeInactive: z.boolean().optional(),
         }).optional(),
       )
-      .query(({ input }) => listInterventionTypes(input?.departmentId)),
+      .query(({ input, ctx }) =>
+        listInterventionTypes(input?.departmentId, ctx.adminScope, input?.includeInactive)
+      ),
+    saveInterventionType: adminWriteProcedure
+      .input(z.object({ id: z.number().int().positive().optional(), departmentId: z.number().int().positive(), name: z.string().trim().min(1).max(80), active: z.enum(["YES", "NO"]) }))
+      .mutation(({ input, ctx }) => saveInterventionType(input, ctx.user.email ?? ctx.user.openId, ctx.adminScope)),
     createSlots: adminWriteProcedure
       .input(z.object({
         dates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(366),
         departmentId: z.number().int().positive(),
-        interventionTypeId: z.number().int().positive().nullable().optional(),
         federation: z.string().trim().min(2).max(80),
         status: z.enum(["AVAILABLE", "UNAVAILABLE"]).optional(),
       }))
@@ -108,12 +119,12 @@ export const appRouter = router({
         input.departmentId,
         input.federation,
         ctx.user.email ?? ctx.user.openId,
+        ctx.adminScope,
         input.status ?? "AVAILABLE",
-        input.interventionTypeId,
       )),
     updateSlot: adminWriteProcedure
       .input(z.object({ slotId: z.number().int().positive(), status: slotStatus, note: z.string().max(1000).optional() }))
-      .mutation(({ input, ctx }) => setSlotStatus(input.slotId, input.status, ctx.user.email ?? ctx.user.openId, input.note)),
+      .mutation(({ input, ctx }) => setSlotStatus(input.slotId, input.status, ctx.user.email ?? ctx.user.openId, ctx.adminScope, input.note)),
     updateSlotFederation: adminWriteProcedure
       .input(z.object({
         slotId: z.number().int().positive(),
@@ -123,10 +134,11 @@ export const appRouter = router({
         input.slotId,
         input.federation,
         ctx.user.email ?? ctx.user.openId,
+        ctx.adminScope,
       )),
     removeSlot: adminWriteProcedure
       .input(z.object({ slotId: z.number().int().positive() }))
-      .mutation(({ input, ctx }) => removeEmptySlot(input.slotId, ctx.user.email ?? ctx.user.openId)),
+      .mutation(({ input, ctx }) => removeEmptySlot(input.slotId, ctx.user.email ?? ctx.user.openId, ctx.adminScope)),
     updateInvitation: adminWriteProcedure
       .input(z.object({
         requestId: z.number().int().positive(),
@@ -140,37 +152,95 @@ export const appRouter = router({
         desiredTime: z.string().max(40).optional().nullable(),
         churchAddress: z.string().max(500).optional().nullable(),
       }))
-      .mutation(({ input, ctx }) => updateInvitationDetails({ ...input, actor: ctx.user.email ?? ctx.user.openId })),
+      .mutation(({ input, ctx }) => updateInvitationDetails({
+        ...input,
+        actor: ctx.user.email ?? ctx.user.openId,
+        scope: ctx.adminScope,
+      })),
     decide: adminWriteProcedure
       .input(z.object({ requestId: z.number().int().positive(), action: z.enum(["CONFIRM", "RELEASE"]), note: z.string().max(1000).optional() }))
-      .mutation(({ input, ctx }) => decideRequest({ ...input, actor: ctx.user.email ?? ctx.user.openId })),
+      .mutation(({ input, ctx }) => decideRequest({
+        ...input,
+        actor: ctx.user.email ?? ctx.user.openId,
+        scope: ctx.adminScope,
+      })),
     cancel: adminWriteProcedure
       .input(z.object({ requestId: z.number().int().positive(), disposition: z.enum(["AVAILABLE", "UNAVAILABLE"]), note: z.string().max(1000).optional() }))
-      .mutation(({ input, ctx }) => cancelInvitation({ ...input, actor: ctx.user.email ?? ctx.user.openId })),
+      .mutation(({ input, ctx }) => cancelInvitation({
+        ...input,
+        actor: ctx.user.email ?? ctx.user.openId,
+        scope: ctx.adminScope,
+      })),
     reschedule: adminWriteProcedure
       .input(z.object({ requestId: z.number().int().positive(), newSlotId: z.number().int().positive(), oldDisposition: z.enum(["AVAILABLE", "UNAVAILABLE"]) }))
-      .mutation(({ input, ctx }) => rescheduleInvitation({ ...input, actor: ctx.user.email ?? ctx.user.openId })),
-    settings: adminProcedure.query(() => settings()),
-    schedulerStatus: adminProcedure.query(() => scheduledWorkStatus()),
-    updateSetting: adminWriteProcedure
+      .mutation(({ input, ctx }) => rescheduleInvitation({
+        ...input,
+        actor: ctx.user.email ?? ctx.user.openId,
+        scope: ctx.adminScope,
+      })),
+    settings: primaryAdminProcedure.query(() => settings()),
+    schedulerStatus: primaryAdminProcedure.query(() => scheduledWorkStatus()),
+    updateSetting: primaryAdminWriteProcedure
       .input(z.object({ key: z.enum(["federations", "fields", "reminders", "retention", "emailTemplates"]), value: z.unknown() }))
       .mutation(({ input, ctx }) => updateSetting(input.key, input.value, ctx.user.email ?? ctx.user.openId)),
-    audit: adminProcedure.input(z.object({ limit: z.number().int().min(1).max(250).optional() }).optional()).query(({ input }) => listAudit(input?.limit)),
-    admins: adminProcedure.query(() => listAdmins()),
-    privacyRequests: adminProcedure.query(() => listPrivacyRequests()),
-    privacyDetails: adminProcedure.input(z.object({ requestId: z.number().int().positive() })).query(({ input }) => privacyRequestDetails(input.requestId)),
-    privacyStatus: adminWriteProcedure.input(z.object({ requestId: z.number().int().positive(), status: z.enum(["NEW", "IN_PROGRESS"]) }))
+    audit: primaryAdminProcedure.input(z.object({ limit: z.number().int().min(1).max(250).optional() }).optional()).query(({ input }) => listAudit(input?.limit)),
+    admins: primaryAdminProcedure.query(() => listAdmins()),
+    createAdmin: primaryAdminWriteProcedure
+      .input(z.object({
+        name: z.string().trim().min(1).max(180),
+        email: z.string().trim().email().max(320),
+        password: z.string().min(12).max(200),
+        role: z.enum(["PRIMARY_ADMIN", "ADMIN", "READ_ONLY"]),
+        departmentIds: z.array(z.number().int().positive()),
+      }))
+      .mutation(({ input, ctx }) =>
+        createAdminAccount({
+          ...input,
+          actor: ctx.user.email ?? ctx.user.openId,
+        }),
+      ),
+
+    updateAdmin: primaryAdminWriteProcedure
+      .input(z.object({
+        adminProfileId: z.number().int().positive(),
+        name: z.string().trim().min(1).max(180),
+        email: z.string().trim().email().max(320),
+        role: z.enum(["PRIMARY_ADMIN", "ADMIN", "READ_ONLY"]),
+        active: z.enum(["YES", "NO"]),
+        departmentIds: z.array(z.number().int().positive()),
+      }))
+      .mutation(({ input, ctx }) =>
+        updateAdminAccount({
+          ...input,
+          actor: ctx.user.email ?? ctx.user.openId,
+        }),
+      ),
+
+    resetAdminPassword: primaryAdminWriteProcedure
+      .input(z.object({
+        adminProfileId: z.number().int().positive(),
+        newPassword: z.string().min(12).max(200),
+      }))
+      .mutation(({ input, ctx }) =>
+        resetAdminPassword({
+          ...input,
+          actor: ctx.user.email ?? ctx.user.openId,
+        }),
+      ),
+    privacyRequests: primaryAdminProcedure.query(() => listPrivacyRequests()),
+    privacyDetails: primaryAdminProcedure.input(z.object({ requestId: z.number().int().positive() })).query(({ input }) => privacyRequestDetails(input.requestId)),
+    privacyStatus: primaryAdminWriteProcedure.input(z.object({ requestId: z.number().int().positive(), status: z.enum(["NEW", "IN_PROGRESS"]) }))
       .mutation(({ input, ctx }) => setPrivacyRequestStatus({ ...input, actor: ctx.user.email ?? ctx.user.openId })),
-    privacyComplete: adminWriteProcedure.input(z.object({ requestId: z.number().int().positive() }))
+    privacyComplete: primaryAdminWriteProcedure.input(z.object({ requestId: z.number().int().positive() }))
       .mutation(({ input, ctx }) => completePrivacyRequest(input.requestId, ctx.user.email ?? ctx.user.openId)),
-    runRetention: adminWriteProcedure.mutation(({ ctx }) => anonymizeExpiredRequests(ctx.user.email ?? ctx.user.openId)),
-    gmailMailStatus: adminProcedure.query(() => gmailConnectionStatus()),
-    emailOutbox: adminProcedure.query(() => listEmailOutbox(40)),
-    retryEmail: adminWriteProcedure.input(z.object({ id: z.number().int().positive() })).mutation(({ input }) => retryEmailOutbox(input.id)),
+    runRetention: primaryAdminWriteProcedure.mutation(({ ctx }) => anonymizeExpiredRequests(ctx.user.email ?? ctx.user.openId)),
+    gmailMailStatus: primaryAdminProcedure.query(() => gmailConnectionStatus()),
+    emailOutbox: primaryAdminProcedure.query(() => listEmailOutbox(40)),
+    retryEmail: primaryAdminWriteProcedure.input(z.object({ id: z.number().int().positive() })).mutation(({ input }) => retryEmailOutbox(input.id)),
     export: adminProcedure
-      .input(z.object({ format: z.enum(["csv", "xlsx"]), status: z.array(requestStatus).optional(), federation: z.string().max(80).optional(), month: z.string().regex(/^\d{4}-\d{2}$/).optional(), year: z.string().regex(/^\d{4}$/).optional(), search: z.string().max(120).optional() }))
-      .query(async ({ input }) => {
-        const rows = await exportInvitationRows(input);
+      .input(z.object({ departmentId: z.number().int().positive().optional(), format: z.enum(["csv", "xlsx"]), status: z.array(requestStatus).optional(), federation: z.string().max(80).optional(), month: z.string().regex(/^\d{4}-\d{2}$/).optional(), year: z.string().regex(/^\d{4}$/).optional(), search: z.string().max(120).optional() }))
+      .query(async ({ input, ctx }) => {
+        const rows = await exportInvitationRows(input, ctx.adminScope);
         if (input.format === "csv") {
           const sheet = XLSX.utils.json_to_sheet(rows);
           const csv = XLSX.utils.sheet_to_csv(sheet, { FS: ";" });

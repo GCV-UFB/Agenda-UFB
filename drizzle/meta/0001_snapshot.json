@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "0f0a889d-2597-49d9-9d32-fc0f28f57b0a",
-  "prevId": "3c3a03ea-b871-416a-b531-aa772cca8b00",
+  "id": "43fdd234-f07e-479a-957a-22022a42d043",
+  "prevId": "bdcd697b-c5ff-4ffd-bddb-26c66b6b979e",
   "tables": {
     "action_tokens": {
       "name": "action_tokens",
@@ -85,6 +85,168 @@
           ]
         }
       },
+      "checkConstraint": {}
+    },
+    "admin_credentials": {
+      "name": "admin_credentials",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "adminProfileId": {
+          "name": "adminProfileId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "passwordHash": {
+          "name": "passwordHash",
+          "type": "varchar(512)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "failedAttempts": {
+          "name": "failedAttempts",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "lockedUntil": {
+          "name": "lockedUntil",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "passwordChangedAt": {
+          "name": "passwordChangedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {
+        "admin_credentials_locked_idx": {
+          "name": "admin_credentials_locked_idx",
+          "columns": [
+            "lockedUntil"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "admin_credentials_id": {
+          "name": "admin_credentials_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "admin_credentials_adminProfileId_unique": {
+          "name": "admin_credentials_adminProfileId_unique",
+          "columns": [
+            "adminProfileId"
+          ]
+        }
+      },
+      "checkConstraint": {}
+    },
+    "admin_departments": {
+      "name": "admin_departments",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "adminProfileId": {
+          "name": "adminProfileId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "departmentId": {
+          "name": "departmentId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        }
+      },
+      "indexes": {
+        "admin_departments_admin_department_unique": {
+          "name": "admin_departments_admin_department_unique",
+          "columns": [
+            "adminProfileId",
+            "departmentId"
+          ],
+          "isUnique": true
+        },
+        "admin_departments_admin_idx": {
+          "name": "admin_departments_admin_idx",
+          "columns": [
+            "adminProfileId"
+          ],
+          "isUnique": false
+        },
+        "admin_departments_department_idx": {
+          "name": "admin_departments_department_idx",
+          "columns": [
+            "departmentId"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "admin_departments_id": {
+          "name": "admin_departments_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
       "checkConstraint": {}
     },
     "admin_profiles": {
@@ -339,9 +501,23 @@
           "notNull": true,
           "autoincrement": true
         },
+        "departmentId": {
+          "name": "departmentId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "date": {
           "name": "date",
           "type": "date",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "federation": {
+          "name": "federation",
+          "type": "varchar(80)",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
@@ -380,9 +556,11 @@
         }
       },
       "indexes": {
-        "date_slots_date_unique": {
-          "name": "date_slots_date_unique",
+        "date_slots_department_federation_date_unique": {
+          "name": "date_slots_department_federation_date_unique",
           "columns": [
+            "departmentId",
+            "federation",
             "date"
           ],
           "isUnique": true
@@ -390,6 +568,25 @@
         "date_slots_status_date_idx": {
           "name": "date_slots_status_date_idx",
           "columns": [
+            "status",
+            "date"
+          ],
+          "isUnique": false
+        },
+        "date_slots_department_status_date_idx": {
+          "name": "date_slots_department_status_date_idx",
+          "columns": [
+            "departmentId",
+            "status",
+            "date"
+          ],
+          "isUnique": false
+        },
+        "date_slots_department_federation_status_date_idx": {
+          "name": "date_slots_department_federation_status_date_idx",
+          "columns": [
+            "departmentId",
+            "federation",
             "status",
             "date"
           ],
@@ -406,6 +603,84 @@
         }
       },
       "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "departments": {
+      "name": "departments",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "code": {
+          "name": "code",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(180)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "active": {
+          "name": "active",
+          "type": "enum('YES','NO')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'YES'"
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {
+        "departments_active_idx": {
+          "name": "departments_active_idx",
+          "columns": [
+            "active"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "departments_id": {
+          "name": "departments_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "departments_code_unique": {
+          "name": "departments_code_unique",
+          "columns": [
+            "code"
+          ]
+        }
+      },
       "checkConstraint": {}
     },
     "email_outbox": {
@@ -455,7 +730,7 @@
         },
         "status": {
           "name": "status",
-          "type": "enum('PENDING','PREVIEW','SENT','FAILED')",
+          "type": "enum('PENDING','PREVIEW','SENDING','SENT','FAILED')",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
@@ -514,6 +789,148 @@
       "uniqueConstraints": {},
       "checkConstraint": {}
     },
+    "google_mail_connections": {
+      "name": "google_mail_connections",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "mailboxEmail": {
+          "name": "mailboxEmail",
+          "type": "varchar(320)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "refreshTokenEncrypted": {
+          "name": "refreshTokenEncrypted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "connectedBy": {
+          "name": "connectedBy",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "connectedAt": {
+          "name": "connectedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "google_mail_connections_id": {
+          "name": "google_mail_connections_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "intervention_types": {
+      "name": "intervention_types",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "departmentId": {
+          "name": "departmentId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(180)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "active": {
+          "name": "active",
+          "type": "enum('YES','NO')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'YES'"
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {
+        "intervention_types_department_name_unique": {
+          "name": "intervention_types_department_name_unique",
+          "columns": [
+            "departmentId",
+            "name"
+          ],
+          "isUnique": true
+        },
+        "intervention_types_department_active_idx": {
+          "name": "intervention_types_department_active_idx",
+          "columns": [
+            "departmentId",
+            "active"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "intervention_types_id": {
+          "name": "intervention_types_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
     "invitation_requests": {
       "name": "invitation_requests",
       "columns": {
@@ -536,6 +953,20 @@
           "type": "int",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "departmentId": {
+          "name": "departmentId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "interventionTypeId": {
+          "name": "interventionTypeId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "federation": {
@@ -577,7 +1008,7 @@
           "name": "interventionType",
           "type": "varchar(80)",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "message": {
@@ -597,6 +1028,13 @@
         "churchAddress": {
           "name": "churchAddress",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "googleCalendarEventId": {
+          "name": "googleCalendarEventId",
+          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
@@ -671,6 +1109,20 @@
           ],
           "isUnique": false
         },
+        "invitation_requests_department_idx": {
+          "name": "invitation_requests_department_idx",
+          "columns": [
+            "departmentId"
+          ],
+          "isUnique": false
+        },
+        "invitation_requests_intervention_type_idx": {
+          "name": "invitation_requests_intervention_type_idx",
+          "columns": [
+            "interventionTypeId"
+          ],
+          "isUnique": false
+        },
         "invitation_requests_status_idx": {
           "name": "invitation_requests_status_idx",
           "columns": [
@@ -708,6 +1160,157 @@
           "name": "invitation_requests_submissionId_unique",
           "columns": [
             "submissionId"
+          ]
+        }
+      },
+      "checkConstraint": {}
+    },
+    "microsoft_mail_connections": {
+      "name": "microsoft_mail_connections",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "mailboxEmail": {
+          "name": "mailboxEmail",
+          "type": "varchar(320)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "refreshTokenEncrypted": {
+          "name": "refreshTokenEncrypted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "connectedBy": {
+          "name": "connectedBy",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "connectedAt": {
+          "name": "connectedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "microsoft_mail_connections_id": {
+          "name": "microsoft_mail_connections_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "microsoft_oauth_states": {
+      "name": "microsoft_oauth_states",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "stateHash": {
+          "name": "stateHash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "verifierEncrypted": {
+          "name": "verifierEncrypted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "userId": {
+          "name": "userId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "platform": {
+          "name": "platform",
+          "type": "enum('web','native')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expiresAt": {
+          "name": "expiresAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "usedAt": {
+          "name": "usedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        }
+      },
+      "indexes": {
+        "microsoft_oauth_expiry_idx": {
+          "name": "microsoft_oauth_expiry_idx",
+          "columns": [
+            "expiresAt"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "microsoft_oauth_states_id": {
+          "name": "microsoft_oauth_states_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "microsoft_oauth_states_stateHash_unique": {
+          "name": "microsoft_oauth_states_stateHash_unique",
+          "columns": [
+            "stateHash"
           ]
         }
       },
@@ -798,9 +1401,23 @@
           "notNull": true,
           "autoincrement": false
         },
+        "slotDate": {
+          "name": "slotDate",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
         "reminderKind": {
           "name": "reminderKind",
           "type": "enum('D30','D7','D1')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "recipient": {
+          "name": "recipient",
+          "type": "varchar(320)",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
@@ -815,11 +1432,13 @@
         }
       },
       "indexes": {
-        "reminder_request_kind_unique": {
-          "name": "reminder_request_kind_unique",
+        "reminder_request_date_kind_recipient_unique": {
+          "name": "reminder_request_date_kind_recipient_unique",
           "columns": [
             "requestId",
-            "reminderKind"
+            "slotDate",
+            "reminderKind",
+            "recipient"
           ],
           "isUnique": true
         }
@@ -834,6 +1453,90 @@
         }
       },
       "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "scheduled_jobs": {
+      "name": "scheduled_jobs",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "jobKey": {
+          "name": "jobKey",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "taskUid": {
+          "name": "taskUid",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "active": {
+          "name": "active",
+          "type": "enum('YES','NO')",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'YES'"
+        },
+        "createdAt": {
+          "name": "createdAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(now())"
+        },
+        "updatedAt": {
+          "name": "updatedAt",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "onUpdate": true,
+          "default": "(now())"
+        }
+      },
+      "indexes": {
+        "scheduled_jobs_active_idx": {
+          "name": "scheduled_jobs_active_idx",
+          "columns": [
+            "active"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "scheduled_jobs_id": {
+          "name": "scheduled_jobs_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "scheduled_jobs_jobKey_unique": {
+          "name": "scheduled_jobs_jobKey_unique",
+          "columns": [
+            "jobKey"
+          ]
+        },
+        "scheduled_jobs_taskUid_unique": {
+          "name": "scheduled_jobs_taskUid_unique",
+          "columns": [
+            "taskUid"
+          ]
+        }
+      },
       "checkConstraint": {}
     },
     "users": {

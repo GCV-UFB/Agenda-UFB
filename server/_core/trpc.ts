@@ -2,7 +2,7 @@ import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "../../shared/const.js";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
-import { getAdminProfileRole } from "../db";
+import { getAdminScope } from "../db";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -33,16 +33,66 @@ function requireAdmin(write: boolean) {
     if (!ctx.user) {
       throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     }
-    const role = await getAdminProfileRole(ctx.user.id, ctx.user.email);
-    const permitted = write
-      ? role === "PRIMARY_ADMIN" || role === "ADMIN"
-      : role === "PRIMARY_ADMIN" || role === "ADMIN" || role === "READ_ONLY";
-    if (!permitted) {
+    const adminScope = await getAdminScope(ctx.user.id, ctx.user.email);
+
+    if (!adminScope) {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
-    return next({ ctx: { ...ctx, user: ctx.user } });
+
+    if (write && !adminScope.canWrite) {
+      throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+    }
+
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+        adminScope,
+      },
+    });
   });
 }
 
 export const adminProcedure = t.procedure.use(requireAdmin(false));
 export const adminWriteProcedure = t.procedure.use(requireAdmin(true));
+
+function requirePrimaryAdmin(write: boolean) {
+  return t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: UNAUTHED_ERR_MSG,
+      });
+    }
+
+    const adminScope = await getAdminScope(ctx.user.id, ctx.user.email);
+
+    if (!adminScope || adminScope.role !== "PRIMARY_ADMIN") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: NOT_ADMIN_ERR_MSG,
+      });
+    }
+
+    if (write && !adminScope.canWrite) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: NOT_ADMIN_ERR_MSG,
+      });
+    }
+
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+        adminScope,
+      },
+    });
+  });
+}
+
+export const primaryAdminProcedure =
+  t.procedure.use(requirePrimaryAdmin(false));
+
+export const primaryAdminWriteProcedure =
+  t.procedure.use(requirePrimaryAdmin(true));

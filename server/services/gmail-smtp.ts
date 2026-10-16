@@ -3,21 +3,7 @@ import { google } from "googleapis";
 import { ADMIN_EMAIL } from "../../shared/gcv";
 import { getGoogleRefreshToken, googleTokenStatus } from "./google-mail-token";
 
-const REDIRECT_URI =
-  "https://gcv-ufb-agenda.onrender.com/api/google/oauth/callback";
-
-function gmailConfig() {
-  const user = process.env.GMAIL_USER?.trim();
-  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
-
-  return {
-    user,
-    clientId,
-    clientSecret,
-    configured: Boolean(user && clientId && clientSecret),
-  };
-}
+import { googleOAuthConfig } from "./google-config";
 
 function encodeHeader(value: string) {
   return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
@@ -32,13 +18,15 @@ function encodeMessage(message: string) {
 }
 
 export async function gmailConnectionStatus() {
-  const config = gmailConfig();
+  const config = googleOAuthConfig();
   const tokenStatus = await googleTokenStatus();
 
   return {
-    configured: config.configured && tokenStatus.configured,
-    connected: config.configured && tokenStatus.configured,
-    email: tokenStatus.mailboxEmail ?? config.user ?? ADMIN_EMAIL,
+    authorizationReady: config.configured,
+    redirectUri: config.redirectUri,
+    configured: config.configured,
+    connected: config.configured && tokenStatus.configured && tokenStatus.mailboxEmail?.toLowerCase() === config.mailbox,
+    email: config.mailbox || ADMIN_EMAIL,
   };
 }
 
@@ -47,9 +35,10 @@ export async function sendGmailMail(input: {
   subject: string;
   html: string;
 }) {
-  const config = gmailConfig();
+  const config = googleOAuthConfig();
 
-  if (!config.user || !config.clientId || !config.clientSecret) {
+  const status = await gmailConnectionStatus();
+  if (!config.configured || !status.connected) {
     throw new Error(
       "Gmail API não configurada. Verifique GMAIL_USER, GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET.",
     );
@@ -66,7 +55,7 @@ export async function sendGmailMail(input: {
   const oauth2Client = new google.auth.OAuth2(
     config.clientId,
     config.clientSecret,
-    REDIRECT_URI,
+    config.redirectUri!,
   );
 
   oauth2Client.setCredentials({
@@ -79,7 +68,7 @@ export async function sendGmailMail(input: {
   });
 
   const message = [
-    `From: "GCV-UFB" <${config.user}>`,
+    `From: "Agenda UFB" <${config.mailbox}>`,
     `To: ${input.to}`,
     `Reply-To: ${ADMIN_EMAIL}`,
     `Subject: ${encodeHeader(input.subject)}`,

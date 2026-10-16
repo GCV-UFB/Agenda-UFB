@@ -97,10 +97,16 @@ export async function exchangeOAuthCode(
   };
 }
 
-export async function loginAdmin(password: string): Promise<void> {
+export async function loginAdmin(
+  email: string,
+  password: string,
+): Promise<void> {
   await apiCall<{ success: true }>("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({
+      email: email.trim().toLowerCase(),
+      password,
+    }),
   });
 }
 
@@ -119,13 +125,35 @@ export async function getMe(): Promise<{
   email: string | null;
   loginMethod: string | null;
   lastSignedIn: string;
+  adminRole: "PRIMARY_ADMIN" | "ADMIN" | "READ_ONLY";
 } | null> {
   try {
-    const result = await apiCall<{ user: any }>("/api/auth/me");
+    const baseUrl = getApiBaseUrl();
+    const cleanBaseUrl = baseUrl.endsWith("/")
+      ? baseUrl.slice(0, -1)
+      : baseUrl;
+    const url = baseUrl
+      ? `${cleanBaseUrl}/api/auth/me`
+      : "/api/auth/me";
+
+    const response = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+    });
+
+    if (response.status === 401 || response.status === 403) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Authentication request failed: ${response.status}`);
+    }
+
+    const result = await response.json();
     return result.user || null;
-  } catch {
-    console.error("[API] getMe failed");
-    return null;
+  } catch (error) {
+    console.error("[API] Authentication connection failed", error);
+    throw error;
   }
 }
 

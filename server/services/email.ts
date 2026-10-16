@@ -4,6 +4,10 @@ import { ADMIN_EMAIL } from "../../shared/gcv";
 import { getDb } from "../db";
 import { gmailConnectionStatus, sendGmailMail } from "./gmail-smtp";
 
+export function emailNotificationsEnabled() {
+  return process.env.UFB_EMAIL_NOTIFICATIONS_ENABLED === "true";
+}
+
 type OutboxDraft = { requestId?: number; recipient: string; subject: string; html: string };
 type EmailDb = NonNullable<Awaited<ReturnType<typeof getDb>>>;
 
@@ -21,11 +25,17 @@ async function claimOutboxMessage(db: EmailDb, id: number) {
 
 /** Atomically claim a test or operational row without contacting the SMTP service. */
 export async function claimEmailOutboxMessage(id: number) {
+  if (!emailNotificationsEnabled()) {
+    return false;
+  }
   const db = await getDb();
   return db ? claimOutboxMessage(db, id) : false;
 }
 
 export async function queueEmail(draft: OutboxDraft) {
+  if (!emailNotificationsEnabled()) {
+    throw new Error("Les notifications par e-mail sont désactivées pendant la phase pilote.");
+  }
   const db = await getDb();
   if (!db) throw new Error("Base de données indisponible");
   const result = await db.insert(emailOutbox).values({
@@ -40,11 +50,14 @@ export async function queueEmail(draft: OutboxDraft) {
 }
 
 export async function deliverOutbox(ids?: number[]) {
+  if (!emailNotificationsEnabled()) {
+    return { delivered: 0, preview: 0 };
+  }
   const db = await getDb();
   if (!db) return { delivered: 0, preview: 0 };
   const predicates = ids?.length
-    ? and(inArray(emailOutbox.id, ids), inArray(emailOutbox.status, ["PENDING", "PREVIEW"]))
-    : inArray(emailOutbox.status, ["PENDING", "PREVIEW"]);
+    ? and(inArray(emailOutbox.id, ids), eq(emailOutbox.status, "PENDING"))
+    : eq(emailOutbox.status, "PENDING");
   const messages = await db.select().from(emailOutbox).where(predicates);
   const status = await gmailConnectionStatus();
   if (!status.configured || !status.connected) {
@@ -115,12 +128,15 @@ export async function listEmailOutbox(limit = 30) {
 }
 
 export async function retryEmailOutbox(id: number) {
+  if (!emailNotificationsEnabled()) {
+    throw new Error("Les notifications par e-mail sont désactivées pendant la phase pilote.");
+  }
   const db = await getDb();
   if (!db) throw new Error("Base de données indisponible");
   const result = await db.update(emailOutbox).set({ status: "PENDING", lastError: null })
-    .where(and(eq(emailOutbox.id, id), inArray(emailOutbox.status, ["FAILED", "PREVIEW"])));
+    .where(and(eq(emailOutbox.id, id), eq(emailOutbox.status, "FAILED")));
   if (affectedRows(result) !== 1) {
-    throw new Error("Seuls les messages en échec ou en preview peuvent être retentés.");
+    throw new Error("Seuls les messages en échec peuvent être retentés.");
   }
   await deliverOutbox([id]);
   const status = (await db.select({ status: emailOutbox.status }).from(emailOutbox).where(eq(emailOutbox.id, id)).limit(1))[0]?.status;

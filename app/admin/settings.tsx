@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Alert, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { DEFAULT_EMAIL_TEMPLATES, DEFAULT_FIELDS, FEDERATIONS, type RequestStatus } from "@/shared/gcv";
 import { Field, GCV, LoadingBlock, PrimaryButton, SectionCard } from "@/components/gcv-ui";
 import { ScreenContainer } from "@/components/screen-container";
 import { trpc } from "@/lib/trpc";
+import { getApiBaseUrl } from "@/constants/oauth";
+import { useAuth } from "@/hooks/use-auth";
 
 type ExtraField = keyof typeof DEFAULT_FIELDS;
 type FieldRule = { visible: boolean; required: boolean };
@@ -34,7 +36,7 @@ const TEMPLATE_LABELS: Record<TemplateKey, string> = {
   reminderSubject: "Rappel — objet",
   reminderBody: "Rappel — message",
 };
-const TEMPLATE_HELP = "Variables : {{prenom}}, {{date}}, {{eglise}}, {{federation}}, {{contact}}, {{email}}, {{telephone}}, {{type}}, {{heure}}, {{adresse}}, {{message}}, {{identifiant}}, {{lien_agenda}}.";
+const TEMPLATE_HELP = "Variables : {{departement}}, {{prenom}}, {{date}}, {{eglise}}, {{federation}}, {{contact}}, {{email}}, {{telephone}}, {{type}}, {{heure}}, {{adresse}}, {{message}}, {{identifiant}}, {{lien_agenda}}.";
 const CURRENT_YEAR = String(new Date().getFullYear());
 const OUTBOX_LABEL = { PENDING: "En attente", PREVIEW: "Preview · pas encore envoyé", SENDING: "Envoi en cours", SENT: "Envoyé", FAILED: "Échec d’envoi" } as const;
 
@@ -54,7 +56,7 @@ function makeSettingsDraft(data?: SettingsPayload): SettingsDraft {
   return {
     federations: Array.isArray(data?.federations) ? data.federations as string[] : [...FEDERATIONS],
     fieldRules: {
-      interventionType: { ...DEFAULT_FIELDS.interventionType, ...incomingFields?.interventionType },
+      interventionType: { ...DEFAULT_FIELDS.interventionType },
       message: { ...DEFAULT_FIELDS.message, ...incomingFields?.message },
       desiredTime: { ...DEFAULT_FIELDS.desiredTime, ...incomingFields?.desiredTime },
       churchAddress: { ...DEFAULT_FIELDS.churchAddress, ...incomingFields?.churchAddress },
@@ -67,11 +69,106 @@ function makeSettingsDraft(data?: SettingsPayload): SettingsDraft {
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const settings = trpc.admin.settings.useQuery();
+  const { user, loading } = useAuth();
+  const isPrimaryAdmin = user?.adminRole === "PRIMARY_ADMIN";
+  const canAccessSettings = isPrimaryAdmin;
+  const admins = trpc.admin.admins.useQuery(undefined, {
+    enabled: isPrimaryAdmin,
+  });
+  const adminDepartments = trpc.admin.departments.useQuery(undefined, {
+    enabled: true,
+  });
+
+  const [adminName, setAdminName] = useState("");
+  const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminRole, setAdminRole] = useState<"PRIMARY_ADMIN" | "ADMIN" | "READ_ONLY">("ADMIN");
+  const [adminDepartmentIds, setAdminDepartmentIds] = useState<number[]>([]);
+
+  const [editingAdminId, setEditingAdminId] = useState<number | null>(null);
+  const [editingAdminName, setEditingAdminName] = useState("");
+  const [editingAdminEmail, setEditingAdminEmail] = useState("");
+  const [editingAdminRole, setEditingAdminRole] = useState<"PRIMARY_ADMIN" | "ADMIN" | "READ_ONLY">("ADMIN");
+  const [editingAdminActive, setEditingAdminActive] = useState<"YES" | "NO">("YES");
+  const [editingAdminDepartmentIds, setEditingAdminDepartmentIds] = useState<number[]>([]);
+  const [temporaryPassword, setTemporaryPassword] = useState("");
+  const [adminEditFeedback, setAdminEditFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  const updateAdmin = trpc.admin.updateAdmin.useMutation({
+    onSuccess: async () => {
+      await admins.refetch();
+      setAdminEditFeedback({
+        type: "success",
+        message: "Compte administrateur mis à jour avec succès.",
+      });
+    },
+    onError: (error) => {
+      setAdminEditFeedback({
+        type: "error",
+        message: error.message || "Le compte n’a pas pu être modifié.",
+      });
+    },
+  });
+
+  const resetAdminPassword = trpc.admin.resetAdminPassword.useMutation({
+    onSuccess: () => {
+      setTemporaryPassword("");
+      setAdminEditFeedback({
+        type: "success",
+        message: "Mot de passe provisoire modifié avec succès.",
+      });
+    },
+    onError: (error) => {
+      setAdminEditFeedback({
+        type: "error",
+        message: error.message || "Le mot de passe n’a pas pu être modifié.",
+      });
+    },
+  });
+
+  const [adminCreateFeedback, setAdminCreateFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  const createAdmin = trpc.admin.createAdmin.useMutation({
+    onSuccess: async (_data, variables) => {
+      setAdminName("");
+      setAdminEmail("");
+      setAdminPassword("");
+      setAdminRole("ADMIN");
+      setAdminDepartmentIds([]);
+      await admins.refetch();
+      const createdRole = variables.role;
+      const successMessage =
+        createdRole === "PRIMARY_ADMIN"
+          ? "Compte d’administration générale UFB créé avec succès."
+          : createdRole === "READ_ONLY"
+            ? "Compte en lecture seule créé avec succès."
+            : "Compte administrateur créé avec succès.";
+
+      setAdminCreateFeedback({
+        type: "success",
+        message: successMessage,
+      });
+    },
+    onError: (error) => {
+      setAdminCreateFeedback({
+        type: "error",
+        message:
+          error.message ||
+          "Le compte administrateur n’a pas pu être créé.",
+      });
+    },
+  });
+  const settings = trpc.admin.settings.useQuery(undefined, { enabled: canAccessSettings });
   const update = trpc.admin.updateSetting.useMutation({ onSuccess: () => { void settings.refetch(); } });
-  const gmail = trpc.admin.gmailMailStatus.useQuery();
-  const scheduler = trpc.admin.schedulerStatus.useQuery();
-  const outbox = trpc.admin.emailOutbox.useQuery();
+  const gmail = trpc.admin.gmailMailStatus.useQuery(undefined, { enabled: canAccessSettings });
+  const scheduler = trpc.admin.schedulerStatus.useQuery(undefined, { enabled: canAccessSettings });
+  const outbox = trpc.admin.emailOutbox.useQuery(undefined, { enabled: canAccessSettings });
   const retentionRun = trpc.admin.runRetention.useMutation({ onSuccess: () => { void settings.refetch(); } });
   const retryEmail = trpc.admin.retryEmail.useMutation({ onSuccess: () => { void outbox.refetch(); } });
 
@@ -86,14 +183,16 @@ export default function SettingsScreen() {
   const setTemplates = (value: TemplateSet | ((current: TemplateSet) => TemplateSet)) => updateDraft((current) => ({ ...current, templates: typeof value === "function" ? value(current.templates) : value }));
   const [newFederation, setNewFederation] = useState("");
   const [exportYear, setExportYear] = useState(CURRENT_YEAR);
+  const [exportDepartmentId, setExportDepartmentId] = useState<number | undefined>();
   const [exportFederation, setExportFederation] = useState("");
   const [exportScope, setExportScope] = useState<ExportScope>("ALL");
 
   const exportFilters = useMemo(() => ({
+    departmentId: exportDepartmentId,
     year: /^\d{4}$/.test(exportYear) ? exportYear : undefined,
     federation: exportFederation || undefined,
     status: exportScope === "ALL" ? undefined : exportScope === "HISTORY" ? ["REFUSED", "CANCELLED", "RESCHEDULED"] as RequestStatus[] : [exportScope] as RequestStatus[],
-  }), [exportYear, exportFederation, exportScope]);
+  }), [exportDepartmentId, exportYear, exportFederation, exportScope]);
   const exportCsv = trpc.admin.export.useQuery({ format: "csv", ...exportFilters }, { enabled: false });
   const exportXlsx = trpc.admin.export.useQuery({ format: "xlsx", ...exportFilters }, { enabled: false });
 
@@ -139,11 +238,526 @@ export default function SettingsScreen() {
     }
   };
 
+  if (loading) return <ScreenContainer containerClassName="bg-[#F4F8FB]"><LoadingBlock label="Vérification des autorisations…" /></ScreenContainer>;
+  if (!canAccessSettings) return <ScreenContainer containerClassName="bg-[#F4F8FB]" className="px-5"><View style={{ padding: 24, alignItems: "center", gap: 12 }}><Text style={{ fontSize: 22, fontWeight: "800", color: GCV.navy }}>Accès non autorisé</Text><Text style={{ textAlign: "center", color: GCV.muted }}>Votre profil ne permet pas d’accéder aux réglages administratifs.</Text><PrimaryButton label="RETOUR AU TABLEAU DE BORD" onPress={() => router.replace("/admin" as never)} /></View></ScreenContainer>;
   if (settings.isLoading) return <ScreenContainer containerClassName="bg-[#F4F8FB]"><LoadingBlock label="Chargement des réglages…" /></ScreenContainer>;
 
   return <ScreenContainer containerClassName="bg-[#F4F8FB]" className="px-5"><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
     <Text style={styles.back} onPress={() => router.back()}>‹ Tableau de bord</Text>
     <Text style={styles.title}>Réglages</Text>
+
+    {isPrimaryAdmin ? (
+      <SectionCard>
+        <Text style={styles.section}>Gestion des administrateurs</Text>
+        <Text style={styles.text}>
+          Créez des accès individuels et limitez chaque responsable aux départements dont il a la charge.
+        </Text>
+
+        <Text style={styles.fieldTitle}>Départements et responsables</Text>
+
+        {adminDepartments.isLoading || admins.isLoading ? (
+          <LoadingBlock label="Chargement des attributions…" />
+        ) : adminDepartments.error ? (
+          <Text style={styles.error}>{adminDepartments.error.message}</Text>
+        ) : admins.error ? (
+          <Text style={styles.error}>{admins.error.message}</Text>
+        ) : (
+          <View>
+            {(adminDepartments.data ?? []).map((department) => {
+              const responsables = (admins.data ?? []).filter(
+                (admin) =>
+                  admin.profile.role !== "PRIMARY_ADMIN" &&
+                  admin.departments.some(
+                    (assignedDepartment) =>
+                      assignedDepartment.id === department.id,
+                  ),
+              );
+
+              return (
+                <View key={department.id} style={styles.outboxRow}>
+                  <Text style={styles.fieldTitle}>{department.name}</Text>
+
+                  {responsables.length ? (
+                    responsables.map((responsable) => (
+                      <Text
+                        key={responsable.profile.id}
+                        style={styles.helper}
+                      >
+                        {responsable.user.name || responsable.profile.email}
+                        {" · "}
+                        {responsable.profile.role === "ADMIN"
+                          ? "ADMINISTRATEUR"
+                          : "LECTURE SEULE"}
+                        {" · "}
+                        {responsable.profile.active === "YES"
+                          ? "ACCÈS ACTIF"
+                          : "ACCÈS DÉSACTIVÉ"}
+                      </Text>
+                    ))
+                  ) : (
+                    <Text style={styles.helper}>SANS RESPONSABLE</Text>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        )}
+
+        <Text style={styles.fieldTitle}>Responsables actuels</Text>
+
+        {admins.isLoading ? (
+          <LoadingBlock label="Chargement des responsables…" />
+        ) : admins.error ? (
+          <Text style={styles.error}>{admins.error.message}</Text>
+        ) : (
+          <View>
+            {(admins.data ?? []).map((admin) => (
+              <View key={admin.profile.id} style={styles.outboxRow}>
+                <Text style={styles.fieldTitle}>
+                  {admin.user.name || admin.profile.email}
+                </Text>
+
+                <Text style={styles.text}>{admin.profile.email}</Text>
+
+                <Text style={styles.helper}>
+                  {admin.profile.role === "PRIMARY_ADMIN"
+                    ? "ADMINISTRATION GÉNÉRALE UFB"
+                    : admin.profile.role === "ADMIN"
+                      ? "ADMINISTRATEUR"
+                      : "LECTURE SEULE"}
+                  {" · "}
+                  {admin.profile.active === "YES" ? "ACCÈS ACTIF" : "ACCÈS DÉSACTIVÉ"}
+                </Text>
+
+                <Text style={styles.helper}>
+                  {admin.allDepartments
+                    ? "Tous les départements"
+                    : admin.departments.length
+                      ? admin.departments.map((department) => department.name).join(" · ")
+                      : "Aucun département attribué"}
+                </Text>
+
+                <Pressable
+                  onPress={() => {
+                    setEditingAdminId(admin.profile.id);
+                    setEditingAdminName(admin.user.name ?? "");
+                    setEditingAdminEmail(admin.profile.email);
+                    setEditingAdminRole(admin.profile.role);
+                    setEditingAdminActive(admin.profile.active);
+                    setEditingAdminDepartmentIds(
+                      admin.profile.role === "PRIMARY_ADMIN"
+                        ? []
+                        : admin.departments.map((department) => department.id),
+                    );
+                    setTemporaryPassword("");
+                  }}
+                  style={styles.retryButton}
+                >
+                  <Text style={styles.retryText}>MODIFIER</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {editingAdminId !== null ? (
+          <View>
+            <Text style={styles.fieldTitle}>Modifier le responsable</Text>
+
+            {adminEditFeedback ? (
+              <View
+                style={[
+                  styles.feedbackBanner,
+                  adminEditFeedback.type === "success"
+                    ? styles.feedbackBannerSuccess
+                    : styles.feedbackBannerError,
+                ]}
+                accessibilityRole="alert"
+              >
+                <Text
+                  style={[
+                    styles.feedbackIcon,
+                    adminEditFeedback.type === "success"
+                      ? styles.feedbackSuccessText
+                      : styles.feedbackErrorText,
+                  ]}
+                >
+                  {adminEditFeedback.type === "success" ? "✓" : "!"}
+                </Text>
+
+                <View style={styles.feedbackContent}>
+                  <Text
+                    style={[
+                      styles.feedbackTitle,
+                      adminEditFeedback.type === "success"
+                        ? styles.feedbackSuccessText
+                        : styles.feedbackErrorText,
+                    ]}
+                  >
+                    {adminEditFeedback.type === "success"
+                      ? "Modification enregistrée"
+                      : "Action requise"}
+                  </Text>
+
+                  <Text style={styles.feedbackMessage}>
+                    {adminEditFeedback.message}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
+
+            <Field
+              label="Nom et prénom"
+              value={editingAdminName}
+              onChangeText={setEditingAdminName}
+            />
+
+            <Field
+              label="Adresse e-mail de connexion"
+              value={editingAdminEmail}
+              onChangeText={setEditingAdminEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+
+            <Text style={[styles.fieldTitle, styles.adminSectionSpacing]}>Niveau d’accès</Text>
+            <View style={styles.chips}>
+              <Chip
+                label="ADMINISTRATION GÉNÉRALE UFB"
+                selected={editingAdminRole === "PRIMARY_ADMIN"}
+                onPress={() => {
+                  setEditingAdminRole("PRIMARY_ADMIN");
+                  setEditingAdminDepartmentIds([]);
+                }}
+              />
+              <Chip
+                label="ADMINISTRATEUR"
+                selected={editingAdminRole === "ADMIN"}
+                onPress={() => setEditingAdminRole("ADMIN")}
+              />
+              <Chip
+                label="LECTURE SEULE"
+                selected={editingAdminRole === "READ_ONLY"}
+                onPress={() => setEditingAdminRole("READ_ONLY")}
+              />
+            </View>
+
+            <Text style={[styles.fieldTitle, styles.adminSectionSpacing]}>État de l’accès</Text>
+            <View style={styles.chips}>
+              <Chip
+                label="ACCÈS ACTIF"
+                selected={editingAdminActive === "YES"}
+                onPress={() => setEditingAdminActive("YES")}
+              />
+              <Chip
+                label="ACCÈS DÉSACTIVÉ"
+                selected={editingAdminActive === "NO"}
+                onPress={() => setEditingAdminActive("NO")}
+              />
+            </View>
+
+            {editingAdminRole === "PRIMARY_ADMIN" ? (
+              <Text style={styles.helper}>
+                Accès complet à tous les départements et à l’administration générale de l’UFB.
+              </Text>
+            ) : (
+              <>
+                <Text style={styles.fieldTitle}>Départements autorisés</Text>
+                <View style={styles.chips}>
+                  {(adminDepartments.data ?? []).map((department) => (
+                    <Chip
+                      key={department.id}
+                      label={department.name}
+                      selected={editingAdminDepartmentIds.includes(department.id)}
+                      onPress={() =>
+                        setEditingAdminDepartmentIds((current) =>
+                          current.includes(department.id)
+                            ? current.filter((id) => id !== department.id)
+                            : [...current, department.id]
+                        )
+                      }
+                    />
+                  ))}
+                </View>
+              </>
+            )}
+
+            <Text style={[styles.fieldTitle, styles.adminPasswordSpacing]}>Mot de passe provisoire</Text>
+
+            <Field
+              label="Nouveau mot de passe provisoire"
+              value={temporaryPassword}
+              onChangeText={setTemporaryPassword}
+              placeholder="12 caractères minimum"
+              autoCapitalize="none"
+              secureTextEntry
+            />
+
+            <PrimaryButton
+              label={
+                resetAdminPassword.isPending
+                  ? "MODIFICATION…"
+                  : "DÉFINIR LE MOT DE PASSE PROVISOIRE"
+              }
+              onPress={() => {
+                setAdminEditFeedback(null);
+                if (temporaryPassword.length < 12) {
+                  setAdminEditFeedback({
+                    type: "error",
+                    message: "Le mot de passe provisoire doit contenir au moins 12 caractères.",
+                  });
+                  return;
+                }
+
+                if (editingAdminId === null) {
+                  return;
+                }
+
+                resetAdminPassword.mutate({
+                  adminProfileId: editingAdminId,
+                  newPassword: temporaryPassword,
+                });
+              }}
+              disabled={resetAdminPassword.isPending}
+            />
+
+            <Text style={styles.helper}>
+              Cette opération remplace immédiatement le mot de passe actuel du responsable.
+            </Text>
+
+            <PrimaryButton
+              label={updateAdmin.isPending ? "ENREGISTREMENT…" : "ENREGISTRER LES MODIFICATIONS"}
+              onPress={() => {
+                const name = editingAdminName.trim();
+                const email = editingAdminEmail.trim().toLowerCase();
+
+                setAdminEditFeedback(null);
+                if (!name || !email || !email.includes("@")) {
+                  setAdminEditFeedback({
+                    type: "error",
+                    message: "Vérifiez le nom et l’adresse e-mail.",
+                  });
+                  return;
+                }
+
+                if (
+                  editingAdminRole !== "PRIMARY_ADMIN" &&
+                  editingAdminDepartmentIds.length === 0
+                ) {
+                  setAdminEditFeedback({
+                    type: "error",
+                    message: "Sélectionnez au moins un département.",
+                  });
+                  return;
+                }
+
+                updateAdmin.mutate({
+                  adminProfileId: editingAdminId,
+                  name,
+                  email,
+                  role: editingAdminRole,
+                  active: editingAdminActive,
+                  departmentIds: editingAdminDepartmentIds,
+                });
+              }}
+              disabled={updateAdmin.isPending}
+            />
+
+            <Pressable
+              onPress={() => {
+                setEditingAdminId(null);
+                setTemporaryPassword("");
+                setAdminEditFeedback(null);
+              }}
+              style={styles.retryButton}
+            >
+              <Text style={styles.retryText}>ANNULER</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <Text style={styles.fieldTitle}>Nouvel administrateur</Text>
+
+        {adminCreateFeedback ? (
+          <View
+            style={[
+              styles.feedbackBanner,
+              adminCreateFeedback.type === "success"
+                ? styles.feedbackBannerSuccess
+                : styles.feedbackBannerError,
+            ]}
+            accessibilityRole="alert"
+          >
+            <Text
+              style={[
+                styles.feedbackIcon,
+                adminCreateFeedback.type === "success"
+                  ? styles.feedbackSuccessText
+                  : styles.feedbackErrorText,
+              ]}
+            >
+              {adminCreateFeedback.type === "success" ? "✓" : "!"}
+            </Text>
+
+            <View style={styles.feedbackContent}>
+              <Text
+                style={[
+                  styles.feedbackTitle,
+                  adminCreateFeedback.type === "success"
+                    ? styles.feedbackSuccessText
+                    : styles.feedbackErrorText,
+                ]}
+              >
+                {adminCreateFeedback.type === "success"
+                  ? "Compte créé"
+                  : "Création impossible"}
+              </Text>
+
+              <Text style={styles.feedbackMessage}>
+                {adminCreateFeedback.message}
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
+        <Field
+          label="Nom et prénom"
+          value={adminName}
+          onChangeText={setAdminName}
+          placeholder="Ex. Jean Dupont"
+        />
+
+        <Field
+          label="Adresse e-mail"
+          value={adminEmail}
+          onChangeText={setAdminEmail}
+          placeholder="nom@exemple.fr"
+          keyboardType="email-address"
+          autoCapitalize="none"
+        />
+
+        <Field
+          label="Mot de passe initial"
+          value={adminPassword}
+          onChangeText={setAdminPassword}
+          placeholder="12 caractères minimum"
+          autoCapitalize="none"
+          secureTextEntry
+        />
+
+        <Text style={styles.fieldTitle}>Niveau d’accès</Text>
+        <View style={styles.chips}>
+          <Chip
+            label="ADMINISTRATION GÉNÉRALE UFB"
+            selected={adminRole === "PRIMARY_ADMIN"}
+            onPress={() => {
+              setAdminRole("PRIMARY_ADMIN");
+              setAdminDepartmentIds([]);
+            }}
+          />
+          <Chip
+            label="ADMINISTRATEUR"
+            selected={adminRole === "ADMIN"}
+            onPress={() => setAdminRole("ADMIN")}
+          />
+          <Chip
+            label="LECTURE SEULE"
+            selected={adminRole === "READ_ONLY"}
+            onPress={() => setAdminRole("READ_ONLY")}
+          />
+        </View>
+
+        {adminRole === "PRIMARY_ADMIN" ? (
+          <Text style={styles.helper}>
+            Accès complet à tous les départements et à l’administration générale de l’UFB.
+          </Text>
+        ) : (
+          <>
+            <Text style={styles.fieldTitle}>Départements autorisés</Text>
+
+            {adminDepartments.isLoading ? (
+              <LoadingBlock label="Chargement des départements…" />
+            ) : adminDepartments.error ? (
+              <Text style={styles.error}>{adminDepartments.error.message}</Text>
+            ) : (
+              <View style={styles.chips}>
+                {(adminDepartments.data ?? []).map((department) => (
+                  <Chip
+                    key={department.id}
+                    label={department.name}
+                    selected={adminDepartmentIds.includes(department.id)}
+                    onPress={() =>
+                      setAdminDepartmentIds((current) =>
+                        current.includes(department.id)
+                          ? current.filter((id) => id !== department.id)
+                          : [...current, department.id]
+                      )
+                    }
+                  />
+                ))}
+              </View>
+            )}
+          </>
+        )}
+
+        <PrimaryButton
+          label={createAdmin.isPending ? "CRÉATION…" : "CRÉER LE COMPTE"}
+          onPress={() => {
+            setAdminCreateFeedback(null);
+            const name = adminName.trim();
+            const email = adminEmail.trim().toLowerCase();
+
+            if (!name) {
+              setAdminCreateFeedback({
+                type: "error",
+                message: "Indiquez le nom et le prénom.",
+              });
+              return;
+            }
+
+            if (!email || !email.includes("@")) {
+              setAdminCreateFeedback({
+                type: "error",
+                message: "Indiquez une adresse e-mail valide.",
+              });
+              return;
+            }
+
+            if (adminPassword.length < 12) {
+              setAdminCreateFeedback({
+                type: "error",
+                message: "Le mot de passe doit contenir au moins 12 caractères.",
+              });
+              return;
+            }
+
+            if (
+              adminRole !== "PRIMARY_ADMIN" &&
+              adminDepartmentIds.length === 0
+            ) {
+              setAdminCreateFeedback({
+                type: "error",
+                message: "Sélectionnez au moins un département.",
+              });
+              return;
+            }
+
+            createAdmin.mutate({
+              name,
+              email,
+              password: adminPassword,
+              role: adminRole,
+              departmentIds: adminDepartmentIds,
+            });
+          }}
+          disabled={createAdmin.isPending}
+        />
+
+        <Text style={styles.helper}>
+          Chaque compte utilise une adresse e-mail et un mot de passe individuels. L’Administration générale UFB dispose d’un accès global ; les autres comptes sont limités aux départements sélectionnés.
+        </Text>
+      </SectionCard>
+    ) : null}
 
     <SectionCard>
       <Text style={styles.section}>Fédérations</Text>
@@ -158,7 +772,7 @@ export default function SettingsScreen() {
       <Text style={styles.text}>Les quatre champs facultatifs du formulaire peuvent être masqués ou rendus obligatoires. Les champs obligatoires sont toujours visibles.</Text>
       {(Object.keys(FIELD_LABELS) as ExtraField[]).map((key) => <View key={key} style={styles.ruleRow}>
         <Text style={styles.fieldTitle}>{FIELD_LABELS[key]}</Text>
-        <View style={styles.row}><Toggle label={fieldRules[key].visible ? "Visible" : "Masqué"} selected={fieldRules[key].visible} onPress={() => setFieldRules((current) => ({ ...current, [key]: { visible: !current[key].visible, required: current[key].visible ? false : current[key].required } }))} /><Toggle label={fieldRules[key].required ? "Obligatoire" : "Facultatif"} selected={fieldRules[key].required} disabled={!fieldRules[key].visible} onPress={() => setFieldRules((current) => ({ ...current, [key]: { ...current[key], required: !current[key].required } }))} /></View>
+        {key === "interventionType" ? <Text style={styles.helper}>Toujours visible et obligatoire : le type d’intervention dépend du département choisi.</Text> : <View style={styles.row}><Toggle label={fieldRules[key].visible ? "Visible" : "Masqué"} selected={fieldRules[key].visible} onPress={() => setFieldRules((current) => ({ ...current, [key]: { visible: !current[key].visible, required: current[key].visible ? false : current[key].required } }))} /><Toggle label={fieldRules[key].required ? "Obligatoire" : "Facultatif"} selected={fieldRules[key].required} disabled={!fieldRules[key].visible} onPress={() => setFieldRules((current) => ({ ...current, [key]: { ...current[key], required: !current[key].required } }))} /></View>}
       </View>)}
       <PrimaryButton label="ENREGISTRER LES CHAMPS" onPress={saveFields} disabled={update.isPending} />
     </SectionCard>
@@ -173,11 +787,11 @@ export default function SettingsScreen() {
 
     <SectionCard>
       <Text style={styles.section}>Rappels automatiques</Text>
-      <Text style={styles.text}>Le schedule quotidien vérifie J-30, J-7 et J-1. L’adresse administrative reçoit les rappels; l’envoi au demandeur est facultatif.</Text>
+      <Text style={styles.text}>Les rappels concernent les interventions à J-30, J-7 et J-1. Leur envoi automatique nécessite une planification active. Les responsables concernés et l’adresse administrative reçoivent les rappels; l’envoi au demandeur est facultatif.</Text>
       <Toggle label={reminders.enabled ? "Rappels activés" : "Rappels désactivés"} selected={reminders.enabled} onPress={() => setReminders((current) => ({ ...current, enabled: !current.enabled }))} />
       <Toggle label={reminders.includeRequester ? "Copie au demandeur" : "Ne pas envoyer au demandeur"} selected={reminders.includeRequester} onPress={() => setReminders((current) => ({ ...current, includeRequester: !current.includeRequester }))} />
       <PrimaryButton label="ENREGISTRER LES RAPPELS" tone="secondary" onPress={saveReminders} disabled={update.isPending} />
-      {scheduler.isLoading ? <LoadingBlock label="Vérification du travail planifié…" /> : <Text style={scheduler.data?.configured && scheduler.data.active ? styles.connected : styles.pending}>{scheduler.data?.configured && scheduler.data.active ? "Schedule lié à l’application." : "Le schedule sera créé après la première publication réussie."}</Text>}
+      {scheduler.isLoading ? <LoadingBlock label="Vérification du travail planifié…" /> : <Text style={scheduler.data?.configured && scheduler.data.active ? styles.connected : styles.pending}>{scheduler.data?.configured && scheduler.data.active ? "Planification automatique active." : "Planification automatique non configurée : aucun rappel automatique ne sera envoyé, même si les rappels sont activés ci-dessus."}</Text>}
       <Text style={styles.helper}>La rétention RGPD peut également être réglée ici. Les demandes en attente et les interventions futures ne sont jamais anonymisées automatiquement.</Text>
       <Field label="Conservation des demandes terminées (mois, 1–120)" value={retentionMonths} onChangeText={setRetentionMonths} keyboardType="number-pad" />
       <View style={styles.row}><View style={{ flex: 1 }}><PrimaryButton label="ENREGISTRER LA DURÉE" tone="secondary" onPress={saveRetention} disabled={update.isPending} /></View><View style={{ flex: 1 }}><PrimaryButton label={retentionRun.isPending ? "ANONYMISATION…" : "EXÉCUTER MAINTENANT"} tone="warning" onPress={requestRetention} disabled={retentionRun.isPending || !/^\d+$/.test(retentionMonths)} /></View></View>
@@ -200,10 +814,12 @@ export default function SettingsScreen() {
         </>
       ) : (
         <>
-          <Text style={styles.pending}>Le service Gmail API n’est pas encore configuré.</Text>
+          <Text style={styles.pending}>{gmail.data?.authorizationReady ? "Configuration Gmail prête; autorisation du compte Google en attente." : "Le service Gmail API n’est pas encore configuré."}</Text>
           <Text style={styles.helper}>L’autorisation Google doit être effectuée par l’administrateur avant de pouvoir envoyer des e-mails.</Text>
         </>
       )}
+      {gmail.data?.redirectUri ? <Text selectable style={styles.uri}>Adresse de retour Google : {gmail.data.redirectUri}</Text> : null}
+      {gmail.data?.authorizationReady ? <PrimaryButton label="AUTORISER LE COMPTE GOOGLE" icon="mail-outline" tone="secondary" onPress={() => { const url = `${getApiBaseUrl()}/api/google/oauth/start`; if (Platform.OS === "web") window.location.assign(url); else void Linking.openURL(url); }} /> : <Text style={styles.helper}>L’adresse publique, le compte d’envoi et les clés Google de cette application doivent être configurés sur le serveur.</Text>}
     </SectionCard>
 
     <SectionCard>
@@ -219,6 +835,8 @@ export default function SettingsScreen() {
     <SectionCard>
       <Text style={styles.section}>Export des données</Text>
       <Text style={styles.text}>Téléchargez l’agenda et l’historique filtrés en CSV ou Excel. Le filtre porte sur l’année de la date de prédication.</Text>
+      <Text style={styles.fieldTitle}>Département</Text>
+      <View style={styles.chips}><Chip label="Tous les départements autorisés" selected={exportDepartmentId === undefined} onPress={() => setExportDepartmentId(undefined)} />{(adminDepartments.data ?? []).map((department) => <Chip key={department.id} label={department.name} selected={exportDepartmentId === department.id} onPress={() => setExportDepartmentId(department.id)} />)}</View>
       <Field label="Année (AAAA; vide = toutes)" value={exportYear} onChangeText={setExportYear} placeholder={CURRENT_YEAR} keyboardType="number-pad" />
       <Text style={styles.fieldTitle}>Fédération</Text><View style={styles.chips}><Chip label="Toutes" selected={!exportFederation} onPress={() => setExportFederation("")} />{federations.map((item) => <Chip key={item} label={item} selected={exportFederation === item} onPress={() => setExportFederation(item)} />)}</View>
       <Text style={styles.fieldTitle}>État</Text><View style={styles.chips}><Chip label="Tous" selected={exportScope === "ALL"} onPress={() => setExportScope("ALL")} /><Chip label="Confirmées" selected={exportScope === "CONFIRMED"} onPress={() => setExportScope("CONFIRMED")} /><Chip label="En attente" selected={exportScope === "PENDING"} onPress={() => setExportScope("PENDING")} /><Chip label="Historique clos" selected={exportScope === "HISTORY"} onPress={() => setExportScope("HISTORY")} /></View>
@@ -264,10 +882,60 @@ const styles = StyleSheet.create<any>({
   chipSelected: { borderColor: GCV.navy, backgroundColor: GCV.navy },
   chipTextSelected: { color: "#fff" },
   outboxRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: GCV.border },
+  adminSectionSpacing: { marginTop: 14, marginBottom: 5 },
+  adminPasswordSpacing: { marginTop: 22, marginBottom: 5 },
   retryButton: { backgroundColor: "#E8F0F6", borderRadius: 8, paddingVertical: 9, paddingHorizontal: 10 },
   retryText: { color: GCV.navy, fontSize: 10, fontWeight: "900" },
   uri: { color: GCV.blue, backgroundColor: "#F4F8FB", padding: 10, borderRadius: 8, fontFamily: Platform.OS === "web" ? "monospace" : undefined, fontSize: 12 },
   pending: { color: "#84560B", backgroundColor: "#FFF6E7", padding: 11, borderRadius: 9, fontSize: 12, lineHeight: 18, fontWeight: "750" },
   connected: { color: "#176B43", backgroundColor: "#E7F5EC", padding: 11, borderRadius: 9, fontSize: 12, lineHeight: 18, fontWeight: "800" },
+  feedbackBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 6,
+    marginBottom: 14,
+  },
+  feedbackBannerSuccess: {
+    backgroundColor: "#EAF7EF",
+    borderColor: "#A8D5B9",
+  },
+  feedbackBannerError: {
+    backgroundColor: "#FFF1F0",
+    borderColor: "#E8AAA5",
+  },
+  feedbackIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    textAlign: "center",
+    lineHeight: 26,
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  feedbackContent: {
+    flex: 1,
+  },
+  feedbackTitle: {
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "900",
+    marginBottom: 2,
+  },
+  feedbackMessage: {
+    color: GCV.navy,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  feedbackSuccessText: {
+    color: "#176B43",
+  },
+  feedbackErrorText: {
+    color: GCV.danger,
+  },
+  success: { color: "#176B43", backgroundColor: "#E7F5EC", padding: 11, borderRadius: 9, fontSize: 13, lineHeight: 19, fontWeight: "700" },
   error: { color: GCV.danger, fontSize: 13, lineHeight: 19, fontWeight: "700" },
 });
