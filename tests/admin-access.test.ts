@@ -3,10 +3,12 @@ import type { TrpcContext } from "../server/_core/context";
 import type { AdminScope } from "../server/db";
 
 const mocks = vi.hoisted(() => ({
+  changeOwnPassword: vi.fn(async () => ({ success: true })),
   managedDepartments: vi.fn(async () => []), createDepartment: vi.fn(), setDepartmentActive: vi.fn(),
   scope: vi.fn(), requests: vi.fn(async () => []), decide: vi.fn(), saveType: vi.fn(), deleteAdmin: vi.fn(async () => ({ deleted: true })), options: vi.fn(async () => ({ federations: ["FFN"] })),
 }));
 vi.mock("../server/db", () => ({ getAdminScope: mocks.scope }));
+vi.mock("../server/services/account", () => ({ changeOwnPassword: mocks.changeOwnPassword }));
 vi.mock("../server/services/gcv", () => ({
   listManagedDepartments: mocks.managedDepartments, createDepartment: mocks.createDepartment, setDepartmentActive: mocks.setDepartmentActive,
   listRequests: mocks.requests, decideRequest: mocks.decide, saveInterventionType: mocks.saveType, deleteAdminAccount: mocks.deleteAdmin, formOptions: mocks.options,
@@ -19,6 +21,31 @@ const readOnly: AdminScope = { role: "READ_ONLY", canWrite: false, allDepartment
 beforeEach(() => { vi.clearAllMocks(); mocks.scope.mockResolvedValue(readOnly); });
 
 describe("Administrator access through the actual router", () => {
+  it.each(["PRIMARY_ADMIN", "ADMIN", "READ_ONLY"] as const)("lets %s change only the authenticated user's password", async (role) => {
+    mocks.scope.mockResolvedValue({ ...readOnly, role, canWrite: role !== "READ_ONLY" });
+    await appRouter.createCaller(ctx).admin.changeOwnPassword({ currentPassword: "old-password-123", newPassword: "new-password-123", confirmPassword: "new-password-123" });
+    expect(mocks.changeOwnPassword).toHaveBeenCalledWith({ userId: user.id, currentPassword: "old-password-123", newPassword: "new-password-123" });
+  });
+  it("rejects unauthenticated password changes", async () => {
+    await expect(appRouter.createCaller({ ...ctx, user: null }).admin.changeOwnPassword({ currentPassword: "old-password-123", newPassword: "new-password-123", confirmPassword: "new-password-123" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(mocks.changeOwnPassword).not.toHaveBeenCalled();
+  });
+  it("rejects inactive users changing their password", async () => {
+    mocks.scope.mockResolvedValue(null);
+    await expect(appRouter.createCaller(ctx).admin.changeOwnPassword({ currentPassword: "old-password-123", newPassword: "new-password-123", confirmPassword: "new-password-123" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(mocks.changeOwnPassword).not.toHaveBeenCalled();
+  });
+  it.each([
+    { currentPassword: "", newPassword: "new-password-123", confirmPassword: "new-password-123" },
+    { currentPassword: "old-password-123", newPassword: "short", confirmPassword: "short" },
+    { currentPassword: "old-password-123", newPassword: "new-password-123", confirmPassword: "different-password" },
+    { currentPassword: "old-password-123", newPassword: "x".repeat(201), confirmPassword: "x".repeat(201) },
+    { currentPassword: "old-password-123", newPassword: "new-password-123", confirmPassword: "new-password-123", userId: 99 },
+    { currentPassword: "old-password-123", newPassword: "new-password-123", confirmPassword: "new-password-123", adminProfileId: 99 },
+  ])("rejects invalid password input or attempts to choose another account", async (input) => {
+    await expect(appRouter.createCaller(ctx).admin.changeOwnPassword(input)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mocks.changeOwnPassword).not.toHaveBeenCalled();
+  });
   it.each([null, readOnly, { ...readOnly, role: "ADMIN", canWrite: true }])("restricts department management to general administrators: %s", async (scope) => {
     mocks.scope.mockResolvedValue(scope);
     const caller = appRouter.createCaller(ctx).admin;
