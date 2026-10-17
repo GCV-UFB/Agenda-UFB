@@ -46,6 +46,7 @@ import {
 } from "./services/privacy";
 import { gmailConnectionStatus } from "./services/gmail-smtp";
 import { listEmailOutbox, retryEmailOutbox } from "./services/email";
+import { changeOwnPassword } from "./services/account";
 
 const slotStatus = z.enum(["AVAILABLE", "PENDING_CONFIRMATION", "CONFIRMED", "UNAVAILABLE"]);
 const requestStatus = z.enum(["PENDING", "CONFIRMED", "REFUSED", "CANCELLED", "RESCHEDULED"]);
@@ -88,6 +89,20 @@ export const appRouter = router({
       .mutation(({ input }) => createPrivacyRequest(input)),
   }),
   admin: router({
+    // READ_ONLY restricts department data, not the user's own credentials.
+    changeOwnPassword: adminProcedure
+      .input(z.object({
+        currentPassword: z.string().min(1).max(200),
+        newPassword: z.string().min(12).max(200),
+        confirmPassword: z.string().min(12).max(200),
+      }).strict().refine((input) => input.newPassword === input.confirmPassword, {
+        message: "Les nouveaux mots de passe ne correspondent pas.", path: ["confirmPassword"],
+      }))
+      .mutation(({ input, ctx }) => changeOwnPassword({
+        userId: ctx.user.id,
+        currentPassword: input.currentPassword,
+        newPassword: input.newPassword,
+      })),
     dashboard: adminProcedure.query(({ ctx }) => dashboard(ctx.adminScope)),
     requests: adminProcedure
       .input(z.object({ departmentId: z.number().int().positive().optional(), status: z.array(requestStatus).optional(), search: z.string().max(120).optional(), federation: z.string().max(80).optional(), month: z.string().regex(/^\d{4}-\d{2}$/).optional(), year: z.string().regex(/^\d{4}$/).optional() }).optional())

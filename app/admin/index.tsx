@@ -42,6 +42,7 @@ export default function AdminDashboard() {
     <View style={styles.quick}>
       <PrimaryButton label="DEMANDES" icon="file-tray-full-outline" onPress={() => router.push("/admin/requests" as never)} />
       <PrimaryButton label="AGENDA" icon="calendar-outline" onPress={() => router.push("/admin/calendar" as never)} />
+      <PrimaryButton label="MON MOT DE PASSE" tone="secondary" icon="key-outline" onPress={() => router.push("/admin/account" as never)} />
       {isPrimaryAdmin ? <>
         <PrimaryButton label="RÉGLAGES" tone="secondary" icon="settings-outline" onPress={() => router.push("/admin/settings" as never)} />
         <PrimaryButton label="HISTORIQUE" tone="secondary" icon="time-outline" onPress={() => router.push("/admin/history" as never)} />
